@@ -9,10 +9,10 @@ init:
 
 install:
   - ps: |
-      Write-Host "=== CÀI ĐẶT TIGHTVNC, NOVNC, CLOUDFLARED ==="
+      Write-Host "=== CÀI TIGHTVNC, NOVNC, CLOUDFLARED ==="
       try {
         # TightVNC
-        Write-Host "[1/5] Downloading TightVNC..."
+        Write-Host "[1/4] Downloading & installing TightVNC..."
         Invoke-WebRequest -Uri "https://www.tightvnc.com/download/2.8.63/tightvnc-2.8.63-gpl-setup-64bit.msi" -OutFile "tightvnc-setup.msi"
         Start-Process msiexec.exe -Wait -ArgumentList '/i tightvnc-setup.msi /quiet /norestart ADDLOCAL="Server" SERVER_REGISTER_AS_SERVICE=1 SERVER_ADD_FIREWALL_EXCEPTION=1 SET_USEVNCAUTHENTICATION=1 VALUE_OF_USEVNCAUTHENTICATION=1 SET_PASSWORD=1 VALUE_OF_PASSWORD=hieudz SET_ACCEPTHTTPCONNECTIONS=1 VALUE_OF_ACCEPTHTTPCONNECTIONS=1 SET_ALLOWLOOPBACK=1 VALUE_OF_ALLOWLOOPBACK=1'
         Set-ItemProperty -Path "HKLM:\SOFTWARE\TightVNC\Server" -Name "AllowLoopback" -Value 1 -ErrorAction SilentlyContinue
@@ -24,55 +24,50 @@ install:
         netsh advfirewall firewall add rule name="Allow VNC 5900" dir=in action=allow protocol=TCP localport=5900
         netsh advfirewall firewall add rule name="Allow noVNC 6080" dir=in action=allow protocol=TCP localport=6080
 
-        # noVNC
-        Write-Host "[2/5] Installing Python deps..."
+        # noVNC & websockify
+        Write-Host "[2/4] Installing Python & noVNC..."
         python -m pip install --upgrade pip
         pip install numpy novnc websockify==0.13.0
-        Write-Host "  -> Dependencies installed"
+        Write-Host "  -> Dependencies ready"
 
-        Write-Host "[3/5] Downloading noVNC from GitHub..."
-        $novncVersion = "v1.6.0"
-        Invoke-WebRequest -Uri "https://github.com/novnc/noVNC/archive/refs/tags/$novncVersion.zip" -OutFile "noVNC.zip"
-        Expand-Archive -Path "noVNC.zip" -DestinationPath "." -Force
-        Move-Item -Path "noVNC-$($novncVersion.Substring(1))" -Destination "noVNC" -Force
-        $novncPath = "noVNC"
-
-        Write-Host "[4/5] Starting websockify..."
-        Start-Process -FilePath "python" -ArgumentList "-m", "websockify", "6080", "127.0.0.1:5900", "--web", "$novncPath" -WindowStyle Hidden
-        Start-Sleep 15
+        Write-Host "[3/4] Starting websockify (noVNC)..."
+        # Dùng novnc webroot từ package đã cài
+        $novncWeb = (python -c "import novnc; print(novnc.__path__[0])") + "\web"
+        Write-Host "  -> noVNC web root: $novncWeb"
+        Start-Process -FilePath "python" -ArgumentList "-m", "websockify", "6080", "127.0.0.1:5900", "--web", $novncWeb -WindowStyle Hidden
+        Start-Sleep 10
 
         # Cloudflared
-        Write-Host "[5/5] Downloading Cloudflared..."
+        Write-Host "[4/4] Downloading Cloudflared & starting tunnel..."
         Invoke-WebRequest -Uri "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe" -OutFile "cloudflared.exe"
-        Write-Host "  -> Starting tunnel..."
-        Start-Process -FilePath "cloudflared.exe" -ArgumentList "tunnel", "--url", "http://localhost:6080", "--logfile", "cloudflared.log" -WindowStyle Hidden
+        Start-Process -FilePath "cloudflared.exe" -ArgumentList "tunnel", "--url", "http://localhost:6080", "--logfile", "cloudflared.log", "--protocol", "http2" -WindowStyle Hidden
 
-        # Chờ Cloudflared tạo file log và lấy URL (có retry)
+        # Chờ URL
         Write-Host "  -> Waiting for Cloudflared URL..."
         $cloudflaredUrl = $null
         for ($i = 1; $i -le 30; $i++) {
           Start-Sleep -Seconds 2
           if (Test-Path "cloudflared.log") {
-            try {
-              $logContent = Get-Content "cloudflared.log" -Raw -ErrorAction SilentlyContinue
-              if ($logContent -match 'https://[a-zA-Z0-9-]+\.trycloudflare\.com') {
-                $cloudflaredUrl = $matches[0]
-                break
-              }
-            } catch {}
+            $logContent = Get-Content "cloudflared.log" -Raw -ErrorAction SilentlyContinue
+            if ($logContent -match 'https://[a-zA-Z0-9-]+\.trycloudflare\.com') {
+              $cloudflaredUrl = $matches[0]
+              break
+            }
           }
           Write-Host "    Attempt $i/30..."
         }
 
         if ($cloudflaredUrl) {
+          $fullLink = "$cloudflaredUrl/vnc.html?password=hieudz"
           Write-Host "============================================"
-          Write-Host " REMOTE VNC URL: $cloudflaredUrl/vnc.html"
+          Write-Host " REMOTE VNC READY"
+          Write-Host " URL (auto password): $fullLink"
+          Write-Host " Normal URL (type password): $cloudflaredUrl/vnc.html"
           Write-Host " PASSWORD: hieudz"
           Write-Host "============================================"
         } else {
           Write-Host "ERROR: Could not retrieve Cloudflared URL."
           if (Test-Path "cloudflared.log") {
-            Write-Host "Log content:"
             Get-Content "cloudflared.log" | Write-Host
           }
           exit 1
@@ -84,9 +79,8 @@ install:
 
   - ps: |
       Write-Host "=== VPS SESSION STARTED ==="
-      $totalMinutes = 55
-      for ($i = 1; $i -le $totalMinutes; $i++) {
-        Write-Host "Running minute $i/$totalMinutes ($(Get-Date -Format 'HH:mm:ss'))"
+      for ($i = 1; $i -le 55; $i++) {
+        Write-Host "Running minute $i/55 ($(Get-Date -Format 'HH:mm:ss'))"
         Start-Sleep -Seconds 60
       }
       Write-Host "=== VPS SESSION COMPLETED ==="
