@@ -31,9 +31,17 @@ install:
         Write-Host "  -> Dependencies ready"
 
         Write-Host "[3/4] Starting websockify (noVNC)..."
-        # Dùng novnc webroot từ package đã cài
-        $novncWeb = (python -c "import novnc; print(novnc.__path__[0])") + "\web"
+        # Lấy đường dẫn cài đặt novnc bằng pip show (ổn định hơn)
+        $sitePackages = (pip show novnc | Select-String "Location:").Line -replace "Location:\s*", ""
+        $novncWeb = Join-Path $sitePackages "novnc\web"
         Write-Host "  -> noVNC web root: $novncWeb"
+
+        # Kiểm tra xem thư mục web có tồn tại không
+        if (-not (Test-Path $novncWeb)) {
+          Write-Host "ERROR: noVNC web folder not found at $novncWeb"
+          exit 1
+        }
+
         Start-Process -FilePath "python" -ArgumentList "-m", "websockify", "6080", "127.0.0.1:5900", "--web", $novncWeb -WindowStyle Hidden
         Start-Sleep 10
 
