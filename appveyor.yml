@@ -8,11 +8,11 @@ environment:
   CHROME_PORTABLE_URL: https://download2.portableapps.com/portableapps/GoogleChromePortable/GoogleChromePortable_117.0.5938.150_online.paf.exe
   # Token cho Telegram & auto-restart (tùy chọn)
   GH_TOKEN:
-    secure: <mã_hóa_token_github>
+    secure: <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>
   TELEGRAM_BOT_TOKEN:
-    secure: <mã_hóa_bot_telegram>
+    secure: <8446424800:AAGT3v7j1XIvUe6Q15DSA6F3Rl34iFOBM3E>
   TELEGRAM_CHAT_ID:
-    secure: <mã_hóa_chat_id>
+    secure: <7563947218>
 
 # Cache nhiều thứ hơn, bao gồm cả file zip backup và registry export
 cache:
