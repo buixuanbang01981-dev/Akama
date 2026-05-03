@@ -4,19 +4,17 @@ image: Visual Studio 2019
 environment:
   APPVEYOR_RDP_PASSWORD: HieuDz@123456
   APP_NAME: Antigravity
-  APP_DOWNLOAD_URL: https://drive.google.com/uc?export=download&id=1xXfD93iqsupmosZEv1GtqcdFTu2ltWv3
-  # Bỏ Chrome Portable để tránh lỗi link hỏng
-  # CHROME_PORTABLE_URL: ...
+  APP_DOWNLOAD_URL: https://edgedl.me.gvt1.com/edgedl/release2/j0qc3/antigravity/stable/1.23.2-4781536860569600/windows-x64/Antigravity.exe
   GH_TOKEN:
-    secure: <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>
+    secure: <mã_hóa_token_github>
   TELEGRAM_BOT_TOKEN:
-    secure: <8446424800:AAGT3v7j1XIvUe6Q15DSA6F3Rl34iFOBM3E>
+    secure: <mã_hóa_bot_telegram>
   TELEGRAM_CHAT_ID:
-    secure: <7563947218>
+    secure: <mã_hóa_chat_id>
 
 cache:
-  - C:\Tools\Antigravity.exe                # Cache file portable app
   - C:\Users\appveyor\Downloads\AntigravitySetup.exe
+  - C:\Tools\Antigravity\Antigravity.exe
   - C:\profile_path.txt
   - C:\AppProfile\*
   - C:\cache_backups\*
@@ -26,7 +24,7 @@ init:
   - ps: iex ((new-object net.webclient).DownloadString('https://raw.githubusercontent.com/appveyor/ci/master/scripts/enable-rdp.ps1'))
 
 install:
-  # ---- Bước 1: Môi trường VNC ----
+  # ----- Bước 1: Cài TightVNC, noVNC, Cloudflared -----
   - ps: |
       Write-Host "=== CÀI ĐẶT MÔI TRƯỜNG ==="
       try {
@@ -91,7 +89,7 @@ install:
         exit 1
       }
 
-  # ---- Bước 2: Khôi phục & cài đặt Antigravity ----
+  # ----- Bước 2: Tải & cấu hình Antigravity -----
   - ps: |
       Write-Host "=== CHUẨN BỊ $env:APP_NAME ==="
       $AppName = $env:APP_NAME
@@ -101,7 +99,6 @@ install:
       $RegistryBackupFile = "C:\RegistryBackup.reg"
       $CacheProfileDir = "C:\AppProfile"
 
-      # Hàm backup
       function Backup-Profile {
         if (Test-Path $ProfilePathFile) {
           $source = (Get-Content $ProfilePathFile -Raw -ErrorAction SilentlyContinue).Trim()
@@ -117,7 +114,6 @@ install:
         reg export HKCU $RegistryBackupFile /y *>$null
       }
 
-      # Hàm restore
       function Restore-Profile {
         if (Test-Path $BackupDir) {
           $latestZip = Get-ChildItem $BackupDir -Filter "profile_*.zip" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
@@ -139,66 +135,82 @@ install:
         return $false
       }
 
-      # Thử khôi phục
+      # Khôi phục hoặc cài mới
       if (-not (Restore-Profile)) {
-        # Không có backup -> lần đầu
         if (Test-Path $ProfilePathFile) {
           $cachedProfile = (Get-Content $ProfilePathFile -Raw).Trim()
-          if ($cachedProfile -and (Test-Path $cachedProfile)) {
-            Write-Host "Using cached profile folder (no zip backup)."
-            # Đã có profile từ cache, không cần làm gì thêm
-          } else {
-            # Profile path file có nhưng thư mục không tồn tại -> xóa file
+          if (-not ($cachedProfile -and (Test-Path $cachedProfile))) {
             Remove-Item $ProfilePathFile -Force -ErrorAction SilentlyContinue
-            $cachedProfile = $null
+          } else {
+            Write-Host "Using cached profile folder (no zip backup)."
+            # Gán biến để tránh cài lại
+            $profileAlreadyExists = $true
           }
         }
 
-        if (-not (Test-Path $ProfilePathFile)) {
-          Write-Host "First run: downloading & setting up $AppName..."
+        if (-not $profileAlreadyExists -and -not (Test-Path $ProfilePathFile)) {
+          Write-Host "First run: downloading & installing $AppName..."
 
-          # Tải file từ Drive (cache nếu có)
+          # Tải file cài đặt
           $installerPath = "C:\Users\appveyor\Downloads\AntigravitySetup.exe"
           if (-not (Test-Path $installerPath)) {
-            Write-Host "Downloading from Google Drive..."
-            Invoke-WebRequest -Uri $AppDownloadUrl -OutFile $installerPath -TimeoutSec 300
-            Write-Host "Download complete."
+            Write-Host "Downloading from: $AppDownloadUrl"
+            Invoke-WebRequest -Uri $AppDownloadUrl -OutFile $installerPath -TimeoutSec 600
+            $fileSize = (Get-Item $installerPath).Length
+            if ($fileSize -lt 1MB) {
+              Write-Host "WARNING: Downloaded file is very small ($fileSize bytes). The link might be broken."
+            }
+            Write-Host "Download complete ($fileSize bytes)."
           }
 
-          # Xác định vị trí cài đặt/portable
+          # Nơi đặt exe thực thi
           $appFolder = "C:\Tools\$AppName"
           $appExe = "$appFolder\$AppName.exe"
           New-Item -ItemType Directory -Force -Path $appFolder | Out-Null
 
-          # Thử cài đặt bằng silent switch
+          # Thử cài đặt im lặng với nhiều tham số
           $installed = $false
-          $silentArgs = @("/S", "/silent", "/quiet", "/verysilent", "/sp-", "/suppressmsgboxes", "/norestart")
-          foreach ($arg in $silentArgs) {
+          $silentArgSets = @(
+            @("/silent", "/install"),
+            @("/silent"),
+            @("/S"),
+            @("/quiet"),
+            @("/verysilent")
+          )
+          foreach ($argSet in $silentArgSets) {
             try {
-              Start-Process $installerPath -ArgumentList $arg -Wait -NoNewWindow -ErrorAction Stop
+              Write-Host "Trying silent install with arguments: $($argSet -join ' ')"
+              Start-Process $installerPath -ArgumentList $argSet -Wait -NoNewWindow -ErrorAction Stop
               Start-Sleep 5
-              # Tìm exe sau cài
-              $found = @("C:\Program Files\$AppName\$AppName.exe",
-                         "C:\Program Files (x86)\$AppName\$AppName.exe",
-                         "$env:LOCALAPPDATA\$AppName\$AppName.exe",
-                         "$env:APPDATA\$AppName\$AppName.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
+              # Tìm file exe sau khi cài
+              $searchPaths = @(
+                "C:\Program Files\$AppName\$AppName.exe",
+                "C:\Program Files (x86)\$AppName\$AppName.exe",
+                "C:\Program Files\Google\$AppName\$AppName.exe",
+                "$env:LOCALAPPDATA\$AppName\$AppName.exe",
+                "$env:APPDATA\$AppName\$AppName.exe"
+              )
+              $found = $searchPaths | Where-Object { Test-Path $_ } | Select-Object -First 1
               if ($found) {
                 Copy-Item $found $appExe -Force
                 $installed = $true
+                Write-Host "Installation successful. Executable copied to $appExe"
                 break
               }
-            } catch {}
+            } catch {
+              Write-Host "Attempt with $($argSet[0]) failed: $_"
+            }
           }
 
           if (-not $installed) {
-            Write-Host "Not a standard installer. Treating as portable app..."
+            Write-Host "No silent switch worked. Treating as portable app. Copying to $appExe..."
             Copy-Item $installerPath $appExe -Force
           }
 
           Write-Host "Application executable: $appExe"
 
-          # Chạy app lần đầu để tạo profile
-          Write-Host "Launching $AppName to generate profile..."
+          # Chạy lần đầu để tạo profile
+          Write-Host "Launching $AppName to generate profile (please wait up to 60 seconds)..."
           $scanPaths = @("$env:APPDATA", "$env:LOCALAPPDATA", [Environment]::GetFolderPath("MyDocuments"))
           $beforeDirs = @()
           foreach ($path in $scanPaths) {
@@ -208,8 +220,21 @@ install:
           }
 
           Start-Process $appExe -WindowStyle Minimized
-          Start-Sleep -Seconds 30
-          Stop-Process -Name $AppName -Force -ErrorAction SilentlyContinue
+
+          # Đợi process xuất hiện
+          $waitCount = 0
+          while (-not (Get-Process $AppName -ErrorAction SilentlyContinue) -and $waitCount -lt 30) {
+            Start-Sleep -Seconds 2
+            $waitCount++
+          }
+          if (Get-Process $AppName -ErrorAction SilentlyContinue) {
+            Write-Host "$AppName is running. Waiting 45 seconds for profile initialization..."
+            Start-Sleep -Seconds 45
+            Stop-Process -Name $AppName -Force -ErrorAction SilentlyContinue
+          } else {
+            Write-Host "Process did not appear. Waiting 60 seconds anyway..."
+            Start-Sleep -Seconds 60
+          }
 
           $afterDirs = @()
           foreach ($path in $scanPaths) {
@@ -218,23 +243,26 @@ install:
             }
           }
           $newDirs = $afterDirs | Where-Object { $_ -notin $beforeDirs }
-          $profileDir = if ($newDirs) {
-            ($newDirs | Where-Object { $_ -like "*$AppName*" } | Select-Object -First 1) ?? ($newDirs | Select-Object -First 1)
+
+          if ($newDirs) {
+            $matched = $newDirs | Where-Object { $_ -like "*$AppName*" } | Select-Object -First 1
+            $profileDir = if ($matched) { $matched } else { $newDirs | Select-Object -First 1 }
           } else {
-            "$env:APPDATA\$AppName"
+            $profileDir = "$env:APPDATA\$AppName"
           }
+
           Write-Host "Detected profile folder: $profileDir"
           $profileDir | Out-File -FilePath $ProfilePathFile -Encoding UTF8
-          New-Item -ItemType Directory -Force -Path $CacheProfileDir | Out-Null
           Copy-Item "$profileDir\*" $CacheProfileDir -Recurse -Force -ErrorAction SilentlyContinue
           Backup-Profile
+          Write-Host "ANTIGRAVITY FIRST RUN COMPLETE. PLEASE LOGIN VIA VNC NOW IF NOT ALREADY."
         }
       }
 
-  # ---- Bước 3: Health check (không có Chrome Portable) ----
+  # ----- Bước 3: Giám sát hệ thống -----
   - ps: |
       Write-Host "=== KHỞI ĐỘNG GIÁM SÁT ==="
-      # Monitor VNC
+      # Giám sát VNC
       Start-Job -ScriptBlock {
         while ($true) {
           if (-not (Get-Process "tvnserver" -ErrorAction SilentlyContinue)) {
@@ -244,7 +272,7 @@ install:
         }
       } | Out-Null
 
-      # Monitor Antigravity (dùng file exe đã biết)
+      # Giám sát Antigravity
       $appExe = "C:\Tools\$env:APP_NAME\$env:APP_NAME.exe"
       Start-Job -ScriptBlock {
         param($exe, $name)
@@ -258,7 +286,7 @@ install:
         }
       } -ArgumentList $appExe, $env:APP_NAME | Out-Null
 
-      # Backup job 5 phút
+      # Backup định kỳ
       Start-Job -ScriptBlock {
         while ($true) {
           Start-Sleep -Seconds 300
@@ -277,28 +305,70 @@ install:
           reg export HKCU $RegistryBackupFile /y *>$null
         }
       } | Out-Null
+      Write-Host "Health monitors started."
 
-  # ---- Bước 4: Giữ session + Telegram ----
+  # ----- Bước 4: Giữ session + Telegram + Auto restart -----
   - ps: |
       Write-Host "=== VPS SESSION STARTED ==="
       $cloudflaredUrl = $env:CLOUDFLARED_URL
-      if ($env:TELEGRAM_BOT_TOKEN -and $env:TELEGRAM_CHAT_ID) {
-        $msg = "VPS sẵn sàng!\nVNC: $cloudflaredUrl/vnc.html?password=hieudz\nPass: hieudz\nLệnh: /status, /backup, /restart"
-        [uri]::EscapeDataString($msg) | Out-Null
-        Invoke-RestMethod -Uri "https://api.telegram.org/bot$env:TELEGRAM_BOT_TOKEN/sendMessage?chat_id=$env:TELEGRAM_CHAT_ID&text=$([uri]::EscapeDataString($msg))" -Method Get -TimeoutSec 10
+
+      function Send-Telegram($msg) {
+        if ($env:TELEGRAM_BOT_TOKEN -and $env:TELEGRAM_CHAT_ID) {
+          try {
+            $encoded = [uri]::EscapeDataString($msg)
+            Invoke-RestMethod -Uri "https://api.telegram.org/bot$env:TELEGRAM_BOT_TOKEN/sendMessage?chat_id=$env:TELEGRAM_CHAT_ID&text=$encoded" -Method Get -TimeoutSec 10 | Out-Null
+          } catch {}
+        }
       }
+
+      Send-Telegram "✅ VPS đã sẵn sàng!%0A🔗 VNC: $cloudflaredUrl/vnc.html?password=hieudz%0A🔑 Pass: hieudz%0A⌨️ Lệnh: /status, /backup, /restart"
 
       $totalMinutes = 55
       $lastUpdateId = 0
       for ($i = 1; $i -le $totalMinutes; $i++) {
-        Write-Host "Running minute $i/$totalMinutes ($(Get-Date -Format 'HH:mm:ss'))"
+        $time = Get-Date -Format 'HH:mm:ss'
+        Write-Host "🟢 Running minute $i/$totalMinutes ($time)"
+
+        if ($env:TELEGRAM_BOT_TOKEN -and $env:TELEGRAM_CHAT_ID) {
+          try {
+            $updates = Invoke-RestMethod -Uri "https://api.telegram.org/bot$env:TELEGRAM_BOT_TOKEN/getUpdates?offset=$($lastUpdateId+1)&timeout=5" -Method Get -TimeoutSec 10
+            if ($updates.result.Count -gt 0) {
+              foreach ($update in $updates.result) {
+                $lastUpdateId = $update.update_id
+                if ($update.message.chat.id -eq $env:TELEGRAM_CHAT_ID) {
+                  switch -Wildcard ($update.message.text) {
+                    '/status' { Send-Telegram "🟢 VPS đang chạy. Phút $i/$totalMinutes" }
+                    '/backup' {
+                      $source = (Get-Content "C:\profile_path.txt" -Raw).Trim()
+                      if ($source -and (Test-Path $source)) {
+                        Compress-Archive -Path "$source\*" -DestinationPath "C:\cache_backups\manual_$(Get-Date -Format 'yyyyMMdd_HHmmss').zip" -Force
+                        Send-Telegram "✅ Backup thủ công hoàn tất."
+                      } else { Send-Telegram "❌ Không tìm thấy profile." }
+                    }
+                    '/restart' {
+                      Send-Telegram "⏳ Đang kích hoạt restart..."
+                      if ($env:GH_TOKEN) {
+                        $headers = @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = "application/vnd.github+json" }
+                        $body = @{ event_type = "appveyor-restart" } | ConvertTo-Json
+                        Invoke-RestMethod -Uri "https://api.github.com/repos/$env:APPVEYOR_REPO_NAME/dispatches" -Method Post -Headers $headers -Body $body
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          } catch {}
+        }
+
         if ($i -eq 50 -and $env:GH_TOKEN) {
+          Write-Host "Triggering auto-restart..."
           try {
             $headers = @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = "application/vnd.github+json" }
             $body = @{ event_type = "appveyor-restart" } | ConvertTo-Json
             Invoke-RestMethod -Uri "https://api.github.com/repos/$env:APPVEYOR_REPO_NAME/dispatches" -Method Post -Headers $headers -Body $body
           } catch {}
         }
+
         Start-Sleep -Seconds 60
       }
       Write-Host "=== VPS SESSION COMPLETED ==="
