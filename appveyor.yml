@@ -4,9 +4,9 @@ image: Visual Studio 2019
 environment:
   APPVEYOR_RDP_PASSWORD: HieuDz@123456
   APP_NAME: Antigravity
-  APP_DOWNLOAD_URL: https://your-server.com/antigravity.exe   # <-- SỬA LINK
+  # Link Google Drive của bạn
+  APP_DOWNLOAD_URL: https://drive.google.com/uc?export=download&id=1xXfD93iqsupmosZEv1GtqcdFTu2ltWv3
   CHROME_PORTABLE_URL: https://download2.portableapps.com/portableapps/GoogleChromePortable/GoogleChromePortable_117.0.5938.150_online.paf.exe
-  # Token cho Telegram & auto-restart (tùy chọn)
   GH_TOKEN:
     secure: <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>
   TELEGRAM_BOT_TOKEN:
@@ -14,11 +14,12 @@ environment:
   TELEGRAM_CHAT_ID:
     secure: <7563947218>
 
-# Cache nhiều thứ hơn, bao gồm cả file zip backup và registry export
 cache:
+  # Cache file cài đặt & profile
+  - C:\Users\appveyor\Downloads\AntigravitySetup.exe
   - C:\profile_path.txt
   - C:\AppProfile\*
-  - C:\cache_backups\*       # Lưu các bản backup zip
+  - C:\cache_backups\*
   - C:\RegistryBackup.reg
   - C:\PortableApps\*
 
@@ -26,12 +27,67 @@ init:
   - ps: iex ((new-object net.webclient).DownloadString('https://raw.githubusercontent.com/appveyor/ci/master/scripts/enable-rdp.ps1'))
 
 install:
-  # ---- Bước 1: Môi trường VNC (giữ nguyên) ----
+  # ---- Bước 1: Cài TightVNC, noVNC, Cloudflared ----
   - ps: |
       Write-Host "=== CÀI ĐẶT MÔI TRƯỜNG ==="
       try {
-        # ... (dán script cài TightVNC, noVNC, Cloudflared từ bản chuẩn)
-        # Kết quả: $cloudflaredUrl
+        # TightVNC
+        Write-Host "[1/4] Downloading & installing TightVNC..."
+        Invoke-WebRequest -Uri "https://www.tightvnc.com/download/2.8.63/tightvnc-2.8.63-gpl-setup-64bit.msi" -OutFile "tightvnc-setup.msi" -TimeoutSec 60
+        Start-Process msiexec.exe -Wait -ArgumentList '/i tightvnc-setup.msi /quiet /norestart ADDLOCAL="Server" SERVER_REGISTER_AS_SERVICE=1 SERVER_ADD_FIREWALL_EXCEPTION=1 SET_USEVNCAUTHENTICATION=1 VALUE_OF_USEVNCAUTHENTICATION=1 SET_PASSWORD=1 VALUE_OF_PASSWORD=hieudz SET_ACCEPTHTTPCONNECTIONS=1 VALUE_OF_ACCEPTHTTPCONNECTIONS=1 SET_ALLOWLOOPBACK=1 VALUE_OF_ALLOWLOOPBACK=1'
+        Set-ItemProperty -Path "HKLM:\SOFTWARE\TightVNC\Server" -Name "AllowLoopback" -Value 1 -ErrorAction SilentlyContinue
+        Stop-Process -Name "tvnserver" -Force -ErrorAction SilentlyContinue
+        Start-Sleep 5
+        Start-Process -FilePath "C:\Program Files\TightVNC\tvnserver.exe" -ArgumentList "-run -localhost no" -WindowStyle Hidden
+        Start-Sleep 40
+
+        netsh advfirewall firewall add rule name="Allow VNC 5900" dir=in action=allow protocol=TCP localport=5900
+        netsh advfirewall firewall add rule name="Allow noVNC 6080" dir=in action=allow protocol=TCP localport=6080
+
+        # noVNC
+        Write-Host "[2/4] Installing Python & noVNC..."
+        python -m pip install --upgrade pip
+        pip install numpy novnc websockify==0.13.0
+        Write-Host "  -> Dependencies ready"
+
+        Write-Host "[3/4] Starting websockify (noVNC)..."
+        $sitePackages = (pip show novnc | Select-String "Location:").Line -replace "Location:\s*", ""
+        $novncWeb = Join-Path $sitePackages "novnc\web"
+        Start-Process -FilePath "python" -ArgumentList "-m", "websockify", "6080", "127.0.0.1:5900", "--web", $novncWeb -WindowStyle Hidden
+        Start-Sleep 10
+
+        # Cloudflared
+        Write-Host "[4/4] Downloading Cloudflared & starting tunnel..."
+        Invoke-WebRequest -Uri "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe" -OutFile "cloudflared.exe" -TimeoutSec 60
+        Start-Process -FilePath "cloudflared.exe" -ArgumentList "tunnel", "--url", "http://localhost:6080", "--logfile", "cloudflared.log", "--protocol", "http2" -WindowStyle Hidden
+
+        # Chờ URL
+        Write-Host "  -> Waiting for Cloudflared URL..."
+        $cloudflaredUrl = $null
+        for ($i = 1; $i -le 30; $i++) {
+          Start-Sleep -Seconds 2
+          if (Test-Path "cloudflared.log") {
+            $logContent = Get-Content "cloudflared.log" -Raw -ErrorAction SilentlyContinue
+            if ($logContent -match 'https://[a-zA-Z0-9-]+\.trycloudflare\.com') {
+              $cloudflaredUrl = $matches[0]
+              break
+            }
+          }
+          Write-Host "    Attempt $i/30..."
+        }
+
+        if ($cloudflaredUrl) {
+          $env:CLOUDFLARED_URL = $cloudflaredUrl
+          Write-Host "============================================"
+          Write-Host " REMOTE VNC READY"
+          Write-Host " URL (auto password): $cloudflaredUrl/vnc.html?password=hieudz"
+          Write-Host " Normal URL: $cloudflaredUrl/vnc.html"
+          Write-Host " PASSWORD: hieudz"
+          Write-Host "============================================"
+        } else {
+          Write-Host "ERROR: Could not retrieve Cloudflared URL."
+          exit 1
+        }
       } catch {
         Write-Host "FATAL: Setup failed - $_"
         exit 1
@@ -39,7 +95,7 @@ install:
 
   # ---- Bước 2: Khôi phục & quản lý profile nâng cao ----
   - ps: |
-      Write-Host "=== KHÔI PHỤC PROFILE NÂNG CAO ==="
+      Write-Host "=== KHÔI PHỤC PROFILE ==="
       $AppName = $env:APP_NAME
       $AppDownloadUrl = $env:APP_DOWNLOAD_URL
       $CacheProfileDir = "C:\AppProfile"
@@ -47,41 +103,33 @@ install:
       $BackupDir = "C:\cache_backups"
       $RegistryBackupFile = "C:\RegistryBackup.reg"
 
-      # Hàm tạo backup zip
       function Backup-Profile {
-        $source = Get-Content $ProfilePathFile -Raw -ErrorAction SilentlyContinue
+        $source = (Get-Content $ProfilePathFile -Raw -ErrorAction SilentlyContinue).Trim()
         if ($source -and (Test-Path $source)) {
           $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
           $zipName = "profile_$timestamp.zip"
           New-Item -ItemType Directory -Force -Path $BackupDir | Out-Null
-          Compress-Archive -Path $source\* -DestinationPath "$BackupDir\$zipName" -Force
-          # Giữ lại tối đa 5 bản backup
+          Compress-Archive -Path "$source\*" -DestinationPath "$BackupDir\$zipName" -Force
           Get-ChildItem $BackupDir -Filter "profile_*.zip" | Sort-Object LastWriteTime -Descending | Select-Object -Skip 5 | Remove-Item -Force
           Write-Host "Backup created: $zipName"
         }
-        # Backup registry
         reg export HKCU $RegistryBackupFile /y *>$null
       }
 
-      # Hàm khôi phục từ backup mới nhất
       function Restore-Profile {
         if (Test-Path $BackupDir) {
           $latestZip = Get-ChildItem $BackupDir -Filter "profile_*.zip" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
           if ($latestZip) {
             Write-Host "Restoring from $($latestZip.Name)..."
-            $restoreTarget = Get-Content $ProfilePathFile -Raw -ErrorAction SilentlyContinue
+            $restoreTarget = (Get-Content $ProfilePathFile -Raw -ErrorAction SilentlyContinue).Trim()
             if (-not $restoreTarget) {
-              # nếu không có file profile_path.txt (lần đầu?), tạo thư mục tạm
               $restoreTarget = "$env:APPDATA\$AppName"
               $restoreTarget | Out-File -FilePath $ProfilePathFile -Encoding UTF8
             }
             New-Item -ItemType Directory -Force -Path $restoreTarget | Out-Null
             Expand-Archive -Path $latestZip.FullName -DestinationPath $restoreTarget -Force
-            Write-Host "Profile restored to $restoreTarget"
-            # Import registry nếu có
             if (Test-Path $RegistryBackupFile) {
               reg import $RegistryBackupFile *>$null
-              Write-Host "Registry imported."
             }
             return $true
           }
@@ -89,59 +137,103 @@ install:
         return $false
       }
 
-      # Thử khôi phục từ backup zip trước, nếu không có thì dùng cache trực tiếp
       $restored = Restore-Profile
       if (-not $restored) {
-        $realProfilePath = Get-Content $ProfilePathFile -Raw -ErrorAction SilentlyContinue
+        $realProfilePath = (Get-Content $ProfilePathFile -Raw -ErrorAction SilentlyContinue).Trim()
         if ($realProfilePath -and (Test-Path $realProfilePath)) {
-          Write-Host "Using cached directory (no zip backup found)."
+          Write-Host "Using cached directory."
         } else {
-          Write-Host "No profile found. First run."
-          # Tải app nếu chưa có
-          $appExe = "C:\$AppName.exe"
-          if (-not (Test-Path $appExe)) {
-            Write-Host "Downloading $AppName..."
-            Invoke-WebRequest -Uri $AppDownloadUrl -OutFile $appExe -TimeoutSec 120
+          Write-Host "No profile found. First run - downloading & installing Antigravity..."
+          
+          # Tải từ Google Drive
+          $installerPath = "C:\Users\appveyor\Downloads\AntigravitySetup.exe"
+          if (-not (Test-Path $installerPath)) {
+            Write-Host "Downloading from Google Drive..."
+            Invoke-WebRequest -Uri $AppDownloadUrl -OutFile $installerPath -TimeoutSec 300
+            Write-Host "Download complete."
           }
-          # Tự động phát hiện profile
+
+          # Cài đặt (thử nhiều tham số silent phổ biến)
+          Write-Host "Installing Antigravity IDE..."
+          $installed = $false
+          $silentArgs = @("/S", "/silent", "/quiet", "/verysilent", "/sp-", "/suppressmsgboxes", "/norestart")
+          foreach ($arg in $silentArgs) {
+            try {
+              Start-Process $installerPath -ArgumentList $arg -Wait -NoNewWindow -ErrorAction Stop
+              Start-Sleep -Seconds 5
+              # Kiểm tra xem app đã được cài chưa (tìm file .exe trong Program Files hoặc AppData)
+              $possiblePaths = @(
+                "C:\Program Files\$AppName\$AppName.exe",
+                "C:\Program Files (x86)\$AppName\$AppName.exe",
+                "$env:LOCALAPPDATA\$AppName\$AppName.exe",
+                "$env:APPDATA\$AppName\$AppName.exe"
+              )
+              foreach ($p in $possiblePaths) {
+                if (Test-Path $p) {
+                  $installed = $true
+                  break
+                }
+              }
+              if ($installed) { break }
+            } catch {}
+          }
+
+          if (-not $installed) {
+            Write-Host "Warning: Could not verify installation. Continuing anyway..."
+          }
+
+          # Tự động phát hiện thư mục profile
           $scanPaths = @("$env:APPDATA", "$env:LOCALAPPDATA", [Environment]::GetFolderPath("MyDocuments"))
           $before = @()
-          foreach ($path in $scanPaths) { if (Test-Path $path) { $before += (Get-ChildItem $path -Directory -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName) } }
-          Start-Process $appExe -WindowStyle Minimized
-          Start-Sleep -Seconds 20
+          foreach ($path in $scanPaths) {
+            if (Test-Path $path) {
+              $before += (Get-ChildItem $path -Directory -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName)
+            }
+          }
+
+          Write-Host "Launching Antigravity to generate profile..."
+          # Tìm exe đã cài
+          $appExe = (Get-ChildItem "C:\Program Files\$AppName\$AppName.exe", "C:\Program Files (x86)\$AppName\$AppName.exe", "$env:LOCALAPPDATA\$AppName\$AppName.exe" -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
+          if ($appExe) {
+            Start-Process $appExe -WindowStyle Minimized
+            Start-Sleep -Seconds 30
+            Stop-Process -Name $AppName -Force -ErrorAction SilentlyContinue
+          }
+
           $after = @()
-          foreach ($path in $scanPaths) { if (Test-Path $path) { $after += (Get-ChildItem $path -Directory -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName) } }
+          foreach ($path in $scanPaths) {
+            if (Test-Path $path) {
+              $after += (Get-ChildItem $path -Directory -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName)
+            }
+          }
           $newDirs = $after | Where-Object { $_ -notin $before }
-          $profileDir = if ($newDirs) { ($newDirs | Where-Object { $_ -like "*$AppName*" } | Select-Object -First 1) ?? ($newDirs | Select-Object -First 1) } else { "$env:APPDATA\$AppName" }
+          if ($newDirs) {
+            $matched = $newDirs | Where-Object { $_ -like "*$AppName*" } | Select-Object -First 1
+            $profileDir = if ($matched) { $matched } else { $newDirs | Select-Object -First 1 }
+          } else {
+            $profileDir = "$env:APPDATA\$AppName"
+          }
           Write-Host "Detected profile: $profileDir"
           $profileDir | Out-File -FilePath $ProfilePathFile -Encoding UTF8
-          Stop-Process -Name $AppName -Force -ErrorAction SilentlyContinue
-          # Copy vào cache directory
           New-Item -ItemType Directory -Force -Path $CacheProfileDir | Out-Null
           Copy-Item "$profileDir\*" $CacheProfileDir -Recurse -Force -ErrorAction SilentlyContinue
-          # Tạo backup zip ngay lần đầu
           Backup-Profile
         }
       }
 
-  # ---- Bước 3: Chrome Portable (như cũ, có thể thêm vào cache) ----
+  # ---- Bước 3: Chrome Portable ----
   - ps: |
       Write-Host "=== KIỂM TRA CHROME PORTABLE ==="
       if (-not (Test-Path "C:\PortableApps\Chrome\GoogleChromePortable.exe")) {
         Write-Host "Downloading Chrome Portable..."
         Invoke-WebRequest -Uri $env:CHROME_PORTABLE_URL -OutFile "chrome_install.exe"
         Start-Process -FilePath "chrome_install.exe" -ArgumentList "/destination=C:\PortableApps\Chrome" -Wait -NoNewWindow
-        Write-Host "Chrome Portable installed."
-      } else {
-        Write-Host "Chrome Portable restored from cache."
       }
-      # Khởi động Chrome Portable (ẩn)
       Start-Process "C:\PortableApps\Chrome\GoogleChromePortable.exe" -WindowStyle Minimized
 
-  # ---- Bước 4: Health check & auto-healing background jobs ----
+  # ---- Bước 4: Health check ----
   - ps: |
       Write-Host "=== KHỞI ĐỘNG GIÁM SÁT HỆ THỐNG ==="
-      # Hàm gửi Telegram
       function Send-Telegram($msg) {
         if ($env:TELEGRAM_BOT_TOKEN -and $env:TELEGRAM_CHAT_ID) {
           try {
@@ -151,37 +243,32 @@ install:
         }
       }
 
-      # Job 1: Health check VNC và Cloudflared mỗi 2 phút
+      # Monitor VNC
       Start-Job -ScriptBlock {
         while ($true) {
-          # Kiểm tra tiến trình tvnserver
           if (-not (Get-Process "tvnserver" -ErrorAction SilentlyContinue)) {
-            Write-Host "VNC server down, restarting..."
             Start-Process "C:\Program Files\TightVNC\tvnserver.exe" -ArgumentList "-run -localhost no" -WindowStyle Hidden
           }
-          # Kiểm tra Cloudflared log vẫn đang ghi? Có thể ping thử tunnel
-          # ... (triển khai thêm nếu cần)
           Start-Sleep -Seconds 120
         }
       } | Out-Null
 
-      # Job 2: Giám sát app chính (Antigravity) - nếu không chạy thì khởi động lại
+      # Monitor App
       $appName = $env:APP_NAME
       Start-Job -ScriptBlock {
         while ($true) {
           if (-not (Get-Process $appName -ErrorAction SilentlyContinue)) {
-            Write-Host "$appName not running, restarting..."
-            Start-Process "C:\$appName.exe" -WindowStyle Minimized
+            $exe = (Get-ChildItem "C:\Program Files\$appName\$appName.exe", "C:\Program Files (x86)\$appName\$appName.exe", "$env:LOCALAPPDATA\$appName\$appName.exe" -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
+            if ($exe) { Start-Process $exe -WindowStyle Minimized }
           }
           Start-Sleep -Seconds 60
         }
       } | Out-Null
 
-      # Job 3: Backup định kỳ mỗi 5 phút (đã có trong vòng lặp chính, nhưng thêm background job để an toàn kép)
+      # Backup job (5 min interval)
       Start-Job -ScriptBlock {
         while ($true) {
-          Start-Sleep -Seconds 300  # 5 phút
-          # Gọi hàm backup từ main script? Không được, phải code trực tiếp
+          Start-Sleep -Seconds 300
           $ProfilePathFile = "C:\profile_path.txt"
           $BackupDir = "C:\cache_backups"
           $RegistryBackupFile = "C:\RegistryBackup.reg"
@@ -189,48 +276,44 @@ install:
           if ($source -and (Test-Path $source)) {
             $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
             $zipName = "profile_$timestamp.zip"
-            New-Item -ItemType Directory -Force -Path $BackupDir | Out-Null
-            Compress-Archive -Path $source\* -DestinationPath "$BackupDir\$zipName" -Force
+            Compress-Archive -Path "$source\*" -DestinationPath "$BackupDir\$zipName" -Force
             Get-ChildItem $BackupDir -Filter "profile_*.zip" | Sort-Object LastWriteTime -Descending | Select-Object -Skip 5 | Remove-Item -Force
           }
           reg export HKCU $RegistryBackupFile /y *>$null
         }
       } | Out-Null
 
-      Write-Host "Health monitors started."
-
-  # ---- Bước 5: Vòng lặp chính + Telegram command center ----
+  # ---- Bước 5: Vòng lặp chính + Telegram ----
   - ps: |
       Write-Host "=== VPS SESSION STARTED ==="
-      Send-Telegram "✅ VPS đã sẵn sàng!%0A VNC: $cloudflaredUrl/vnc.html?password=hieudz %0A Pass: hieudz %0A Lệnh: /status, /backup, /restart"
+      $cloudflaredUrl = $env:CLOUDFLARED_URL
+      if ($env:TELEGRAM_BOT_TOKEN -and $env:TELEGRAM_CHAT_ID) {
+        $msg = "VPS sẵn sàng!\nVNC: $cloudflaredUrl/vnc.html?password=hieudz\nPass: hieudz\nLệnh: /status, /backup, /restart"
+        Send-Telegram $msg
+      }
+
       $totalMinutes = 55
       $lastUpdateId = 0
       for ($i = 1; $i -le $totalMinutes; $i++) {
-        $time = Get-Date -Format 'HH:mm:ss'
-        Write-Host "🟢 Running minute $i/$totalMinutes ($time)"
+        Write-Host "Running minute $i/$totalMinutes ($(Get-Date -Format 'HH:mm:ss'))"
 
-        # Kiểm tra lệnh Telegram
         if ($env:TELEGRAM_BOT_TOKEN -and $env:TELEGRAM_CHAT_ID) {
           try {
             $updates = Invoke-RestMethod -Uri "https://api.telegram.org/bot$env:TELEGRAM_BOT_TOKEN/getUpdates?offset=$($lastUpdateId+1)&timeout=5" -Method Get -TimeoutSec 10
             if ($updates.result.Count -gt 0) {
               foreach ($update in $updates.result) {
                 $lastUpdateId = $update.update_id
-                $text = $update.message.text
                 if ($update.message.chat.id -eq $env:TELEGRAM_CHAT_ID) {
-                  switch -Wildcard ($text) {
-                    '/status' { Send-Telegram "🟢 VPS đang chạy. Phút thứ $i/$totalMinutes" }
+                  switch -Wildcard ($update.message.text) {
+                    '/status' { Send-Telegram "VPS đang chạy. Phút $i/$totalMinutes" }
                     '/backup' {
-                      # Gọi backup ngay
                       $source = (Get-Content "C:\profile_path.txt" -Raw).Trim()
                       if ($source -and (Test-Path $source)) {
-                        $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
-                        Compress-Archive -Path $source\* -DestinationPath "C:\cache_backups\manual_$timestamp.zip" -Force
-                        Send-Telegram "✅ Backup thủ công hoàn tất."
-                      } else { Send-Telegram "❌ Không tìm thấy profile." }
+                        Compress-Archive -Path "$source\*" -DestinationPath "C:\cache_backups\manual_$(Get-Date -Format 'yyyyMMdd_HHmmss').zip" -Force
+                        Send-Telegram "Backup hoàn tất."
+                      }
                     }
                     '/restart' {
-                      Send-Telegram "⏳ Kích hoạt restart..."
                       if ($env:GH_TOKEN) {
                         $headers = @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = "application/vnd.github+json" }
                         $body = @{ event_type = "appveyor-restart" } | ConvertTo-Json
@@ -244,9 +327,7 @@ install:
           } catch {}
         }
 
-        # Auto-restart
         if ($i -eq 50 -and $env:GH_TOKEN) {
-          Write-Host "Triggering auto-restart..."
           try {
             $headers = @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = "application/vnd.github+json" }
             $body = @{ event_type = "appveyor-restart" } | ConvertTo-Json
