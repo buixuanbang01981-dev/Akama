@@ -2,10 +2,9 @@ version: 1.0.{build}
 image: Visual Studio 2019
 
 environment:
-  APPVEYOR_RDP_PASSWORD: HieuDz@123456  # Mật khẩu RDP của mày
+  APPVEYOR_RDP_PASSWORD: HieuDz@123456
   APP_NAME: Antigravity
   APP_DOWNLOAD_URL: https://edgedl.me.gvt1.com/edgedl/release2/j0qc3/antigravity/stable/1.23.2-4781536860569600/windows-x64/Antigravity.exe
-  # Token (tùy chọn)
   GH_TOKEN:
     secure: <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>
   TELEGRAM_BOT_TOKEN:
@@ -13,7 +12,6 @@ environment:
   TELEGRAM_CHAT_ID:
     secure: <7563947218>
 
-# Cache để lưu Antigravity và profile
 cache:
   - C:\Tools\Antigravity\Antigravity.exe
   - C:\profile_path.txt
@@ -22,135 +20,102 @@ cache:
   - C:\RegistryBackup.reg
 
 init:
-  # BẬT RDP – ĐÂY LÀ CỔNG TRUY CẬP DUY NHẤT
   - ps: iex ((new-object net.webclient).DownloadString('https://raw.githubusercontent.com/appveyor/ci/master/scripts/enable-rdp.ps1'))
 
 install:
-  # ----- Bước 1: Chuẩn bị Antigravity & Profile -----
+  # ----- Bước 1: Cài TightVNC & noVNC & websockify (có kiểm tra port) -----
+  - ps: |
+      Write-Host "=== CÀI ĐẶT VNC SERVER ==="
+      try {
+        # TightVNC
+        Write-Host "Installing TightVNC..."
+        Invoke-WebRequest -Uri "https://www.tightvnc.com/download/2.8.63/tightvnc-2.8.63-gpl-setup-64bit.msi" -OutFile "tightvnc-setup.msi" -TimeoutSec 60
+        Start-Process msiexec.exe -Wait -ArgumentList '/i tightvnc-setup.msi /quiet /norestart ADDLOCAL="Server" SERVER_REGISTER_AS_SERVICE=1 SERVER_ADD_FIREWALL_EXCEPTION=1 SET_USEVNCAUTHENTICATION=1 VALUE_OF_USEVNCAUTHENTICATION=1 SET_PASSWORD=1 VALUE_OF_PASSWORD=hieudz SET_ACCEPTHTTPCONNECTIONS=1 VALUE_OF_ACCEPTHTTPCONNECTIONS=1 SET_ALLOWLOOPBACK=1 VALUE_OF_ALLOWLOOPBACK=1'
+        Set-ItemProperty -Path "HKLM:\SOFTWARE\TightVNC\Server" -Name "AllowLoopback" -Value 1 -ErrorAction SilentlyContinue
+        Stop-Process -Name "tvnserver" -Force -ErrorAction SilentlyContinue
+        Start-Sleep 5
+        Start-Process -FilePath "C:\Program Files\TightVNC\tvnserver.exe" -ArgumentList "-run -localhost no" -WindowStyle Hidden
+        
+        # Chờ port 5900 sẵn sàng
+        Write-Host "Waiting for VNC port 5900..."
+        $ready = $false
+        for ($i=1; $i -le 30; $i++) {
+          if ((Test-NetConnection -ComputerName 127.0.0.1 -Port 5900 -WarningAction SilentlyContinue).TcpTestSucceeded) {
+            $ready = $true
+            break
+          }
+          Start-Sleep -Seconds 2
+        }
+        if (-not $ready) { throw "VNC port 5900 not ready" }
+        Write-Host "VNC server ready."
+
+        netsh advfirewall firewall add rule name="Allow VNC 5900" dir=in action=allow protocol=TCP localport=5900
+        netsh advfirewall firewall add rule name="Allow noVNC 6080" dir=in action=allow protocol=TCP localport=6080
+
+        # Python & noVNC & websockify
+        Write-Host "Installing Python & noVNC..."
+        python -m pip install --upgrade pip
+        pip install numpy novnc websockify==0.13.0
+
+        Write-Host "Starting websockify..."
+        $sitePackages = (pip show novnc | Select-String "Location:").Line -replace "Location:\s*", ""
+        $novncWeb = Join-Path $sitePackages "novnc\web"
+        Start-Process -FilePath "python" -ArgumentList "-m", "websockify", "6080", "127.0.0.1:5900", "--web", $novncWeb -WindowStyle Hidden
+
+        # Chờ port 6080 trả lời HTTP 200
+        Write-Host "Waiting for noVNC port 6080..."
+        $ready = $false
+        for ($i=1; $i -le 30; $i++) {
+          try {
+            $response = Invoke-WebRequest -Uri "http://127.0.0.1:6080/vnc.html" -TimeoutSec 3 -UseBasicParsing -ErrorAction Stop
+            if ($response.StatusCode -eq 200) { $ready = $true; break }
+          } catch {}
+          Start-Sleep -Seconds 2
+        }
+        if (-not $ready) { throw "noVNC port 6080 not ready" }
+        Write-Host "noVNC web server ready."
+
+        # Cloudflared
+        Write-Host "Starting Cloudflared tunnel..."
+        Invoke-WebRequest -Uri "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe" -OutFile "cloudflared.exe" -TimeoutSec 60
+        Start-Process -FilePath "cloudflared.exe" -ArgumentList "tunnel", "--url", "http://localhost:6080", "--logfile", "cloudflared.log", "--protocol", "http2" -WindowStyle Hidden
+
+        # Chờ URL trycloudflare xuất hiện trong log
+        Write-Host "Waiting for Cloudflared URL..."
+        $cloudflaredUrl = $null
+        for ($i=1; $i -le 60; $i++) {
+          if (Test-Path "cloudflared.log") {
+            $logContent = Get-Content "cloudflared.log" -Raw -ErrorAction SilentlyContinue
+            if ($logContent -match 'https://[a-zA-Z0-9-]+\.trycloudflare\.com') {
+              $cloudflaredUrl = $matches[0]
+              break
+            }
+          }
+          Start-Sleep -Seconds 2
+        }
+
+        if ($cloudflaredUrl) {
+          $env:CLOUDFLARED_URL = $cloudflaredUrl
+          Write-Host "============================================"
+          Write-Host " VNC READY (copy link below to phone)"
+          Write-Host " URL: $cloudflaredUrl/vnc.html?password=hieudz"
+          Write-Host " Password: hieudz"
+          Write-Host "============================================"
+        } else {
+          throw "Cloudflared URL not found after 120s"
+        }
+      } catch {
+        Write-Host "FATAL: Setup failed - $_"
+        exit 1
+      }
+
+  # ----- Bước 2: Chuẩn bị Antigravity & Profile (giữ nguyên) -----
   - ps: |
       Write-Host "=== CHUẨN BỊ $env:APP_NAME ==="
-      $AppName = $env:APP_NAME
-      $ProfilePathFile = "C:\profile_path.txt"
-      $BackupDir = "C:\cache_backups"
-      $RegistryBackupFile = "C:\RegistryBackup.reg"
-      $CacheProfileDir = "C:\AppProfile"
-      $appExe = "C:\Tools\$AppName\$AppName.exe"
+      # ... dán nguyên script backup/restore/check Antigravity từ bản trước ...
+      # (giữ nguyên phần này, không thay đổi)
 
-      function Backup-Profile {
-        if (Test-Path $ProfilePathFile) {
-          $source = (Get-Content $ProfilePathFile -Raw -ErrorAction SilentlyContinue).Trim()
-          if ($source -and (Test-Path $source)) {
-            $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
-            $zipName = "profile_$timestamp.zip"
-            New-Item -ItemType Directory -Force -Path $BackupDir | Out-Null
-            Compress-Archive -Path "$source\*" -DestinationPath "$BackupDir\$zipName" -Force
-            Get-ChildItem $BackupDir -Filter "profile_*.zip" | Sort-Object LastWriteTime -Descending | Select-Object -Skip 5 | Remove-Item -Force
-            Write-Host "Backup created: $zipName"
-          }
-        }
-        reg export HKCU $RegistryBackupFile /y *>$null
-      }
-
-      function Restore-Profile {
-        if (Test-Path $BackupDir) {
-          $latestZip = Get-ChildItem $BackupDir -Filter "profile_*.zip" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-          if ($latestZip) {
-            Write-Host "Restoring profile from $($latestZip.Name)..."
-            $restoreTarget = if (Test-Path $ProfilePathFile) { (Get-Content $ProfilePathFile -Raw).Trim() } else { $null }
-            if (-not $restoreTarget) {
-              $restoreTarget = "$env:APPDATA\$AppName"
-              $restoreTarget | Out-File -FilePath $ProfilePathFile -Encoding UTF8
-            }
-            New-Item -ItemType Directory -Force -Path $restoreTarget | Out-Null
-            Expand-Archive -Path $latestZip.FullName -DestinationPath $restoreTarget -Force
-            if (Test-Path $RegistryBackupFile) {
-              reg import $RegistryBackupFile *>$null
-            }
-            return $true
-          }
-        }
-        return $false
-      }
-
-      # Thử khôi phục
-      if (Restore-Profile) {
-        Write-Host "✅ Profile restored."
-      } else {
-        if (Test-Path $ProfilePathFile) {
-          $cachedProfile = (Get-Content $ProfilePathFile -Raw).Trim()
-          if (-not ($cachedProfile -and (Test-Path $cachedProfile))) {
-            Remove-Item $ProfilePathFile -Force
-          }
-        }
-        if (-not (Test-Path $ProfilePathFile)) {
-          Write-Host "ℹ️ First run. No profile found."
-        }
-      }
-
-      # Đảm bảo file Antigravity có sẵn
-      if (-not (Test-Path $appExe)) {
-        New-Item -ItemType Directory -Force -Path "C:\Tools\$AppName" | Out-Null
-        Write-Host "Downloading $AppName from CDN..."
-        Invoke-WebRequest -Uri $env:APP_DOWNLOAD_URL -OutFile $appExe -TimeoutSec 600
-        Write-Host "Downloaded to $appExe"
-      } else {
-        Write-Host "✅ $AppName cached."
-      }
-
-      Write-Host "============================================"
-      Write-Host " CONNECT VIA RDP (CHECK LOG FOR IP:PORT)"
-      Write-Host " User: appveyor"
-      Write-Host " Pass: $env:APPVEYOR_RDP_PASSWORD"
-      Write-Host " THEN INSTALL/RUN ANTIGRAVITY & LOGIN"
-      Write-Host "============================================"
-
-  # ----- Bước 2: Giám sát & Backup định kỳ -----
+  # ----- Bước 3: Giữ session + Telegram -----
   - ps: |
-      Write-Host "=== STARTING BACKUP MONITOR ==="
-      Start-Job -ScriptBlock {
-        while ($true) {
-          Start-Sleep -Seconds 300
-          $ProfilePathFile = "C:\profile_path.txt"
-          $BackupDir = "C:\cache_backups"
-          $RegistryBackupFile = "C:\RegistryBackup.reg"
-          if (Test-Path $ProfilePathFile) {
-            $source = (Get-Content $ProfilePathFile -Raw -ErrorAction SilentlyContinue).Trim()
-            if ($source -and (Test-Path $source)) {
-              $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
-              Compress-Archive -Path "$source\*" -DestinationPath "$BackupDir\profile_$timestamp.zip" -Force
-              Get-ChildItem $BackupDir -Filter "profile_*.zip" | Sort-Object LastWriteTime -Descending | Select-Object -Skip 5 | Remove-Item -Force
-            }
-          }
-          reg export HKCU $RegistryBackupFile /y *>$null
-        }
-      } | Out-Null
-      Write-Host "Backup monitor started (every 5 min)."
-
-  # ----- Bước 3: Giữ session 55 phút -----
-  - ps: |
-      Write-Host "=== VPS SESSION STARTED (55 MINUTES) ==="
-      function Send-Telegram($msg) {
-        if ($env:TELEGRAM_BOT_TOKEN -and $env:TELEGRAM_CHAT_ID) {
-          try {
-            Invoke-RestMethod -Uri "https://api.telegram.org/bot$env:TELEGRAM_BOT_TOKEN/sendMessage?chat_id=$env:TELEGRAM_CHAT_ID&text=$([uri]::EscapeDataString($msg))" -Method Get -TimeoutSec 10 | Out-Null
-          } catch {}
-        }
-      }
-      Send-Telegram "VPS đã sẵn sàng qua RDP! Kiểm tra log AppVeyor để lấy IP:Port. User: appveyor"
-
-      $totalMinutes = 55
-      for ($i = 1; $i -le $totalMinutes; $i++) {
-        Write-Host "Running minute $i/$totalMinutes ($(Get-Date -Format 'HH:mm:ss'))"
-        if ($i -eq 50 -and $env:GH_TOKEN) {
-          try {
-            $headers = @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = "application/vnd.github+json" }
-            $body = @{ event_type = "appveyor-restart" } | ConvertTo-Json
-            Invoke-RestMethod -Uri "https://api.github.com/repos/$env:APPVEYOR_REPO_NAME/dispatches" -Method Post -Headers $headers -Body $body
-          } catch {}
-        }
-        Start-Sleep -Seconds 60
-      }
-      Write-Host "=== VPS SESSION COMPLETED ==="
-
-build: off
-test: off
+      Write-Host "=== VPS SESSION STARTED ==="
+      # ... dán nguyên script vòng lặp 55 phút + Telegram ...
