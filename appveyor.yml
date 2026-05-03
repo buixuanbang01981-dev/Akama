@@ -45,15 +45,38 @@ install:
         Write-Host "[5/5] Downloading Cloudflared..."
         Invoke-WebRequest -Uri "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe" -OutFile "cloudflared.exe"
         Write-Host "  -> Starting tunnel..."
-        Start-Process -FilePath "cloudflared.exe" -ArgumentList "tunnel", "--url", "http://localhost:6080" -WindowStyle Hidden
-        Start-Sleep 40
+        Start-Process -FilePath "cloudflared.exe" -ArgumentList "tunnel", "--url", "http://localhost:6080", "--logfile", "cloudflared.log" -WindowStyle Hidden
 
-        # Lấy URL
-        $cloudflaredUrl = (Get-Content cloudflared.log -Raw | Select-String -Pattern 'https://[a-zA-Z0-9-]+\.trycloudflare\.com').Matches[0].Value
-        Write-Host "============================================"
-        Write-Host " REMOTE VNC URL: $cloudflaredUrl/vnc.html"
-        Write-Host " PASSWORD: hieudz"
-        Write-Host "============================================"
+        # Chờ Cloudflared tạo file log và lấy URL (có retry)
+        Write-Host "  -> Waiting for Cloudflared URL..."
+        $cloudflaredUrl = $null
+        for ($i = 1; $i -le 30; $i++) {
+          Start-Sleep -Seconds 2
+          if (Test-Path "cloudflared.log") {
+            try {
+              $logContent = Get-Content "cloudflared.log" -Raw -ErrorAction SilentlyContinue
+              if ($logContent -match 'https://[a-zA-Z0-9-]+\.trycloudflare\.com') {
+                $cloudflaredUrl = $matches[0]
+                break
+              }
+            } catch {}
+          }
+          Write-Host "    Attempt $i/30..."
+        }
+
+        if ($cloudflaredUrl) {
+          Write-Host "============================================"
+          Write-Host " REMOTE VNC URL: $cloudflaredUrl/vnc.html"
+          Write-Host " PASSWORD: hieudz"
+          Write-Host "============================================"
+        } else {
+          Write-Host "ERROR: Could not retrieve Cloudflared URL."
+          if (Test-Path "cloudflared.log") {
+            Write-Host "Log content:"
+            Get-Content "cloudflared.log" | Write-Host
+          }
+          exit 1
+        }
       } catch {
         Write-Host "Setup failed: $_"
         exit 1
