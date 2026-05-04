@@ -5,130 +5,185 @@ environment:
   APPVEYOR_RDP_PASSWORD: HieuDz@123456
   APP_NAME: Antigravity
   APP_DOWNLOAD_URL: https://edgedl.me.gvt1.com/edgedl/release2/j0qc3/antigravity/stable/1.23.2-4781536860569600/windows-x64/Antigravity.exe
-  # Bắt buộc lưu cache ngay cả khi build lỗi (đảm bảo dữ liệu không mất)
   APPVEYOR_SAVE_CACHE_ON_ERROR: true
 
+# ========== CACHE (đầy đủ các điểm lưu) ==========
 cache:
+  # Antigravity
   - C:\Tools\Antigravity\Antigravity.exe
+  - C:\cache_backups\*
   - C:\profile_path.txt
   - C:\AppProfile\*
-  - C:\cache_backups\*
   - C:\RegistryBackup.reg
+  # Chrome
+  - C:\ChromeProfile\*
+  - C:\chrome_path.txt
+  - C:\AppveyorCache\*           # thư mục dự phòng
+  - C:\HKCU_Chrome.reg
 
 init:
   - ps: iex ((new-object net.webclient).DownloadString('https://raw.githubusercontent.com/appveyor/ci/master/scripts/enable-rdp.ps1'))
 
 install:
-  # ----- Bước 1: Chuẩn bị Antigravity & Profile -----
+  # ===== Bước 1: Khôi phục & chuẩn bị dữ liệu =====
   - ps: |
-      Write-Host "=== CHUẨN BỊ $env:APP_NAME ==="
-      $AppName = $env:APP_NAME
-      $ProfilePathFile = "C:\profile_path.txt"
+      Write-Host "=== MULTI-LEVEL RESTORE ==="
+      $chromeUserData = "$env:LOCALAPPDATA\Google\Chrome\User Data"
+      $chromeCacheDir = "C:\ChromeProfile"
+      $chromeRegistryKey = "C:\HKCU_Chrome.reg"
+      $chromePathFile = "C:\chrome_path.txt"
+      $appveyorCacheDir = "C:\AppveyorCache"
+
+      # --- Chrome restore ---
+      $restored = $false
+      # 1) Ưu tiên AppVeyor cache (AppveyorCache)
+      if (Test-Path "$appveyorCacheDir\Chrome\User Data\Default") {
+        Write-Host "Restoring Chrome from AppveyorCache..."
+        New-Item -Force -ItemType Directory -Path $chromeUserData | Out-Null
+        robocopy "$appveyorCacheDir\Chrome\User Data" $chromeUserData /E /NJH /NJS /NP | Out-Null
+        $restored = $true
+      }
+      # 2) Kế đến dùng ChromeProfile (zip cache)
+      if (-not $restored -and (Test-Path $chromeCacheDir)) {
+        Write-Host "Restoring Chrome from ChromeProfile..."
+        New-Item -Force -ItemType Directory -Path $chromeUserData | Out-Null
+        Copy-Item "$chromeCacheDir\*" $chromeUserData -Recurse -Force -ErrorAction SilentlyContinue
+        $restored = $true
+      }
+      # 3) Cuối cùng dùng registry-only snapshot
+      if (-not $restored -and (Test-Path $chromeRegistryKey)) {
+        Write-Host "Restoring Chrome registry snapshot..."
+        reg import $chromeRegistryKey *>$null
+        Write-Host "Registry restored, will use existing profile if present."
+      }
+      if (-not $restored) { Write-Host "ℹ️ Fresh Chrome profile." }
+
+      # Lưu đường dẫn Chrome
+      $chromeUserData | Out-File -FilePath $chromePathFile -Encoding UTF8
+
+      # --- Antigravity restore ---
+      Write-Host "=== ANTIGRAVITY RESTORE ==="
       $BackupDir = "C:\cache_backups"
-      $RegistryBackupFile = "C:\RegistryBackup.reg"
+      $ProfilePathFile = "C:\profile_path.txt"
       $CacheProfileDir = "C:\AppProfile"
-      $appExe = "C:\Tools\$AppName\$AppName.exe"
-      
-      # === QUAN TRỌNG: Luôn đảm bảo profile_path.txt tồn tại ===
-      # Nếu file chưa có (lần đầu tiên, hoặc cache không khôi phục), tạo mới trỏ đến thư mục mặc định
+      $AppName = $env:APP_NAME
+      $defaultProfile = "$env:APPDATA\$AppName"
       if (-not (Test-Path $ProfilePathFile)) {
-        $defaultProfile = "$env:APPDATA\$AppName"
-        Write-Host "Creating profile path file: $defaultProfile"
         $defaultProfile | Out-File -FilePath $ProfilePathFile -Encoding UTF8
       }
-
-      function Backup-Profile {
-        if (Test-Path $ProfilePathFile) {
-          $source = (Get-Content $ProfilePathFile -Raw -ErrorAction SilentlyContinue).Trim()
-          if ($source -and (Test-Path $source)) {
-            $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
-            $zipName = "profile_$timestamp.zip"
-            New-Item -ItemType Directory -Force -Path $BackupDir | Out-Null
-            Compress-Archive -Path "$source\*" -DestinationPath "$BackupDir\$zipName" -Force
-            Get-ChildItem $BackupDir -Filter "profile_*.zip" | Sort-Object LastWriteTime -Descending | Select-Object -Skip 5 | Remove-Item -Force
-            Write-Host "Backup created: $zipName"
-          }
+      $restoredApp = $false
+      if (Test-Path $BackupDir) {
+        $latestZip = Get-ChildItem $BackupDir -Filter "profile_*.zip" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+        if ($latestZip) {
+          Write-Host "Restoring Antigravity from $($latestZip.Name)..."
+          New-Item -Force -ItemType Directory -Path $defaultProfile | Out-Null
+          Expand-Archive -Path $latestZip.FullName -DestinationPath $defaultProfile -Force
+          $restoredApp = $true
         }
-        reg export HKCU $RegistryBackupFile /y *>$null
       }
+      if (-not $restoredApp) { Write-Host "ℹ️ No Antigravity backup found." }
 
-      function Restore-Profile {
-        if (Test-Path $BackupDir) {
-          $latestZip = Get-ChildItem $BackupDir -Filter "profile_*.zip" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-          if ($latestZip) {
-            Write-Host "Restoring profile from $($latestZip.Name)..."
-            $restoreTarget = if (Test-Path $ProfilePathFile) { (Get-Content $ProfilePathFile -Raw).Trim() } else { $null }
-            if (-not $restoreTarget) {
-              $restoreTarget = "$env:APPDATA\$AppName"
-              $restoreTarget | Out-File -FilePath $ProfilePathFile -Encoding UTF8
-            }
-            New-Item -ItemType Directory -Force -Path $restoreTarget | Out-Null
-            Expand-Archive -Path $latestZip.FullName -DestinationPath $restoreTarget -Force
-            if (Test-Path $RegistryBackupFile) {
-              reg import $RegistryBackupFile *>$null
-            }
-            return $true
-          }
-        }
-        return $false
-      }
+      # --- Chrome cài đặt nếu chưa có ---
+      $chromeExe = "C:\Program Files\Google\Chrome\Application\chrome.exe"
+      if (-not (Test-Path $chromeExe)) {
+        Write-Host "Chrome not installed. Downloading..."
+        Invoke-WebRequest -Uri "https://dl.google.com/chrome/install/ChromeStandaloneSetup64.exe" -OutFile "C:\chrome_setup.exe" -TimeoutSec 120
+        Start-Process "C:\chrome_setup.exe" -ArgumentList "/silent /install" -Wait -NoNewWindow
+        Write-Host "Chrome installed."
+      } else { Write-Host "✅ Chrome ready." }
 
-      # Thử khôi phục
-      if (Restore-Profile) {
-        Write-Host "✅ Profile restored."
-      } else {
-        Write-Host "ℹ️ No backup found. Will start fresh after you login and data is saved."
-      }
-
-      # Đảm bảo file Antigravity có sẵn
+      # --- Antigravity download (nếu cần) ---
+      $appExe = "C:\Tools\$AppName\$AppName.exe"
       if (-not (Test-Path $appExe)) {
-        New-Item -ItemType Directory -Force -Path "C:\Tools\$AppName" | Out-Null
+        New-Item -Force -ItemType Directory -Path "C:\Tools\$AppName" | Out-Null
         Write-Host "Downloading $AppName from CDN..."
         Invoke-WebRequest -Uri $env:APP_DOWNLOAD_URL -OutFile $appExe -TimeoutSec 600
-        Write-Host "Downloaded to $appExe"
-      } else {
-        Write-Host "✅ $AppName cached."
-      }
+        Write-Host "Downloaded."
+      } else { Write-Host "✅ $AppName cached." }
 
-      Write-Host "============================================"
-      Write-Host " CONNECT VIA RDP (check log for IP:Port)"
-      Write-Host " User: appveyor"
-      Write-Host " Pass: $env:APPVEYOR_RDP_PASSWORD"
-      Write-Host " THEN INSTALL/RUN ANTIGRAVITY & LOGIN"
-      Write-Host "============================================"
+      Write-Host "=== READY. Connect via RDP ==="
 
-  # ----- Bước 2: Giám sát & Backup định kỳ -----
+  # ===== Bước 2: Multi-threaded Backup Monitor =====
   - ps: |
-      Write-Host "=== STARTING BACKUP MONITOR ==="
+      Write-Host "=== LAUNCHING DUAL BACKUP MONITORS ==="
+
+      # Job A: Chrome (snapshot mỗi 5 phút + registry mỗi 10 phút)
+      Start-Job -ScriptBlock {
+        while ($true) {
+          # Full profile snapshot (mỗi 5 phút)
+          $chromeUserData = "$env:LOCALAPPDATA\Google\Chrome\User Data"
+          $chromeCacheDir = "C:\ChromeProfile"
+          if (Test-Path $chromeUserData) {
+            New-Item -Force -ItemType Directory -Path $chromeCacheDir | Out-Null
+            robocopy $chromeUserData $chromeCacheDir /E /NJH /NJS /NP | Out-Null
+          }
+          # Registry export (mỗi 10 phút)
+          if ((Get-Date).Minute % 10 -eq 0) {
+            reg export "HKEY_CURRENT_USER\Software\Google\Chrome\PreferenceMACs" "C:\HKCU_Chrome.reg" /y *>$null
+          }
+          Start-Sleep -Seconds 300
+        }
+      } | Out-Null
+
+      # Job B: Antigravity (snapshot mỗi 5 phút + registry export)
       Start-Job -ScriptBlock {
         while ($true) {
           Start-Sleep -Seconds 300
-          $ProfilePathFile = "C:\profile_path.txt"
           $BackupDir = "C:\cache_backups"
-          $RegistryBackupFile = "C:\RegistryBackup.reg"
+          $ProfilePathFile = "C:\profile_path.txt"
           if (Test-Path $ProfilePathFile) {
-            $source = (Get-Content $ProfilePathFile -Raw -ErrorAction SilentlyContinue).Trim()
+            $source = (Get-Content $ProfilePathFile -Raw).Trim()
             if ($source -and (Test-Path $source)) {
               $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
               Compress-Archive -Path "$source\*" -DestinationPath "$BackupDir\profile_$timestamp.zip" -Force
               Get-ChildItem $BackupDir -Filter "profile_*.zip" | Sort-Object LastWriteTime -Descending | Select-Object -Skip 5 | Remove-Item -Force
-              Write-Host "Backup monitor: saved $source"
             }
           }
-          reg export HKCU $RegistryBackupFile /y *>$null
+          reg export HKCU "C:\RegistryBackup.reg" /y *>$null
         }
       } | Out-Null
-      Write-Host "Backup monitor started (every 5 min)."
 
-  # ----- Bước 3: Giữ session 55 phút -----
+      Write-Host "Dual backup monitors running (Chrome every 5m, Antigravity every 5m)."
+
+  # ===== Bước 3: Keep-alive 55 phút + Self-cleaning =====
   - ps: |
-      Write-Host "=== VPS SESSION STARTED (55 MINUTES) ==="
+      Write-Host "=== VPS SESSION STARTED ==="
       $totalMinutes = 55
       for ($i = 1; $i -le $totalMinutes; $i++) {
-        Write-Host "Running minute $i/$totalMinutes ($(Get-Date -Format 'HH:mm:ss'))"
+        Write-Host "Minute $i/$totalMinutes ($(Get-Date -Format 'HH:mm:ss'))"
+        # Tự dọn temp/log mỗi 15 phút
+        if ($i % 15 -eq 0) {
+          Remove-Item "C:\Windows\Temp\*" -Recurse -Force -ErrorAction SilentlyContinue
+        }
         Start-Sleep -Seconds 60
       }
-      Write-Host "=== VPS SESSION COMPLETED ==="
+      Write-Host "=== SESSION END ==="
+
+on_finish:
+  # Lần quét cuối để đảm bảo mọi thứ đã được lưu
+  - ps: |
+      Write-Host "=== FINAL SWEEP ==="
+      # Chrome
+      $chromeUserData = "$env:LOCALAPPDATA\Google\Chrome\User Data"
+      $chromeCacheDir = "C:\ChromeProfile"
+      $appveyorCacheDir = "C:\AppveyorCache\Chrome\User Data"
+      if (Test-Path $chromeUserData) {
+        robocopy $chromeUserData $chromeCacheDir /E /NJH /NJS /NP | Out-Null
+        robocopy $chromeUserData $appveyorCacheDir /E /NJH /NJS /NP | Out-Null
+      }
+      reg export "HKEY_CURRENT_USER\Software\Google\Chrome\PreferenceMACs" "C:\HKCU_Chrome.reg" /y *>$null
+      # Antigravity
+      $BackupDir = "C:\cache_backups"
+      $ProfilePathFile = "C:\profile_path.txt"
+      if (Test-Path $ProfilePathFile) {
+        $source = (Get-Content $ProfilePathFile -Raw).Trim()
+        if ($source -and (Test-Path $source)) {
+          $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+          Compress-Archive -Path "$source\*" -DestinationPath "$BackupDir\profile_$timestamp.zip" -Force
+        }
+      }
+      reg export HKCU "C:\RegistryBackup.reg" /y *>$null
+      Write-Host "Final sweep done."
 
 build: off
 test: off
