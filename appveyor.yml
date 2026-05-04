@@ -24,32 +24,33 @@ init:
   - ps: iex ((new-object net.webclient).DownloadString('https://raw.githubusercontent.com/appveyor/ci/master/scripts/enable-rdp.ps1'))
 
 install:
-  # ===== Bước 1: Khôi phục & tạo sẵn các thư mục =====
+  # ===== Bước 1: Chuẩn bị tất cả thư mục & khôi phục =====
   - ps: |
-      Write-Host "=== MULTI-LEVEL RESTORE ==="
+      Write-Host "=== CHUẨN BỊ MÔI TRƯỜNG ==="
+      
+      # --- Chrome ---
       $chromeUserData = "$env:LOCALAPPDATA\Google\Chrome\User Data"
       $chromeCacheDir = "C:\ChromeProfile"
       $chromeRegistryKey = "C:\HKCU_Chrome.reg"
       $chromePathFile = "C:\chrome_path.txt"
-      $appveyorCacheDir = "C:\AppveyorCache"
+      $appveyorCacheDir = "C:\AppveyorCache\Chrome\User Data"
 
-      # Đảm bảo thư mục nguồn Chrome tồn tại (tạo sẵn nếu chưa có)
+      # Tạo sẵn thư mục nguồn Chrome nếu chưa có
       if (-not (Test-Path $chromeUserData)) {
         New-Item -Force -ItemType Directory -Path $chromeUserData | Out-Null
-        "Chrome profile placeholder" | Out-File -FilePath "$chromeUserData\FirstRun.txt"
         Write-Host "Created Chrome profile folder."
       }
 
-      # --- Chrome restore ---
+      # Khôi phục Chrome (theo thứ tự ưu tiên)
       $restored = $false
-      if (Test-Path "$appveyorCacheDir\Chrome\User Data\Default") {
+      if (Test-Path "$appveyorCacheDir\Default") {
         Write-Host "Restoring Chrome from AppveyorCache..."
-        robocopy "$appveyorCacheDir\Chrome\User Data" $chromeUserData /E /NJH /NJS /NP | Out-Null
+        robocopy "$appveyorCacheDir" $chromeUserData /E /NJH /NJS /NP | Out-Null
         $restored = $true
       }
       if (-not $restored -and (Test-Path $chromeCacheDir)) {
         Write-Host "Restoring Chrome from ChromeProfile..."
-        Copy-Item "$chromeCacheDir\*" $chromeUserData -Recurse -Force -ErrorAction SilentlyContinue
+        robocopy $chromeCacheDir $chromeUserData /E /NJH /NJS /NP | Out-Null
         $restored = $true
       }
       if (-not $restored -and (Test-Path $chromeRegistryKey)) {
@@ -61,15 +62,13 @@ install:
       $chromeUserData | Out-File -FilePath $chromePathFile -Encoding UTF8
 
       # --- Antigravity ---
-      Write-Host "=== ANTIGRAVITY RESTORE ==="
       $BackupDir = "C:\cache_backups"
       $ProfilePathFile = "C:\profile_path.txt"
-      $CacheProfileDir = "C:\AppProfile"
       $AppName = $env:APP_NAME
       $defaultProfile = "$env:APPDATA\$AppName"
+
       if (-not (Test-Path $defaultProfile)) {
         New-Item -Force -ItemType Directory -Path $defaultProfile | Out-Null
-        "Antigravity profile placeholder" | Out-File -FilePath "$defaultProfile\FirstRun.txt"
         Write-Host "Created Antigravity profile folder."
       }
       if (-not (Test-Path $ProfilePathFile)) {
@@ -87,7 +86,13 @@ install:
       }
       if (-not $restoredApp) { Write-Host "ℹ️ No Antigravity backup found." }
 
-      # --- Ứng dụng (Chrome + Antigravity) ---
+      # --- Đảm bảo các thư mục cache tồn tại (để AppVeyor lưu) ---
+      New-Item -Force -ItemType Directory -Path $chromeCacheDir | Out-Null
+      New-Item -Force -ItemType Directory -Path $appveyorCacheDir | Out-Null
+      New-Item -Force -ItemType Directory -Path $BackupDir | Out-Null
+      New-Item -Force -ItemType Directory -Path "C:\AppProfile" | Out-Null
+
+      # --- Chrome cài đặt ---
       $chromeExe = "C:\Program Files\Google\Chrome\Application\chrome.exe"
       if (-not (Test-Path $chromeExe)) {
         Write-Host "Chrome not installed. Downloading..."
@@ -96,6 +101,7 @@ install:
         Write-Host "Chrome installed."
       } else { Write-Host "✅ Chrome ready." }
 
+      # --- Antigravity download ---
       $appExe = "C:\Tools\$AppName\$AppName.exe"
       if (-not (Test-Path $appExe)) {
         New-Item -Force -ItemType Directory -Path "C:\Tools\$AppName" | Out-Null
@@ -106,82 +112,40 @@ install:
 
       Write-Host "=== READY. Connect via RDP ==="
 
-  # ===== Bước 2: Dual Backup Monitors =====
+  # ===== Bước 2: Vòng lặp chính + Backup đồng bộ mỗi phút =====
   - ps: |
-      Write-Host "=== LAUNCHING DUAL BACKUP MONITORS ==="
-
-      Start-Job -ScriptBlock {
-        while ($true) {
-          Start-Sleep -Seconds 300
-          $chromeUserData = "$env:LOCALAPPDATA\Google\Chrome\User Data"
-          $chromeCacheDir = "C:\ChromeProfile"
-          if (Test-Path $chromeUserData) {
-            New-Item -Force -ItemType Directory -Path $chromeCacheDir | Out-Null
-            robocopy $chromeUserData $chromeCacheDir /E /NJH /NJS /NP | Out-Null
-          }
-          if ((Get-Date).Minute % 10 -eq 0) {
-            reg export "HKEY_CURRENT_USER\Software\Google\Chrome\PreferenceMACs" "C:\HKCU_Chrome.reg" /y *>$null
-          }
-        }
-      } | Out-Null
-
-      Start-Job -ScriptBlock {
-        while ($true) {
-          Start-Sleep -Seconds 300
-          $BackupDir = "C:\cache_backups"
-          $ProfilePathFile = "C:\profile_path.txt"
-          if (Test-Path $ProfilePathFile) {
-            $source = (Get-Content $ProfilePathFile -Raw).Trim()
-            if ($source -and (Test-Path $source)) {
-              $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
-              Compress-Archive -Path "$source\*" -DestinationPath "$BackupDir\profile_$timestamp.zip" -Force
-              Get-ChildItem $BackupDir -Filter "profile_*.zip" | Sort-Object LastWriteTime -Descending | Select-Object -Skip 5 | Remove-Item -Force
-            }
-          }
-          reg export HKCU "C:\RegistryBackup.reg" /y *>$null
-        }
-      } | Out-Null
-
-      Write-Host "Dual backup monitors running (Chrome every 5m, Antigravity every 5m)."
-
-  # ===== Bước 3: Keep-alive + Self-cleaning =====
-  - ps: |
-      Write-Host "=== VPS SESSION STARTED ==="
+      Write-Host "=== VPS SESSION STARTED (BACKUP EVERY MINUTE) ==="
       $totalMinutes = 55
-      for ($i = 1; $i -le $totalMinutes; $i++) {
-        Write-Host "Minute $i/$totalMinutes ($(Get-Date -Format 'HH:mm:ss'))"
-        if ($i % 15 -eq 0) {
-          Remove-Item "C:\Windows\Temp\*" -Recurse -Force -ErrorAction SilentlyContinue
-        }
-        Start-Sleep -Seconds 60
-      }
-      Write-Host "=== SESSION END ==="
-
-on_finish:
-  # Final sweep để đảm bảo mọi thứ đã nằm trong cache
-  - ps: |
-      Write-Host "=== FINAL SWEEP ==="
-      # Chrome
       $chromeUserData = "$env:LOCALAPPDATA\Google\Chrome\User Data"
       $chromeCacheDir = "C:\ChromeProfile"
       $appveyorCacheDir = "C:\AppveyorCache\Chrome\User Data"
-      if (Test-Path $chromeUserData) {
-        robocopy $chromeUserData $chromeCacheDir /E /NJH /NJS /NP | Out-Null
-        robocopy $chromeUserData $appveyorCacheDir /E /NJH /NJS /NP | Out-Null
-      }
-      reg export "HKEY_CURRENT_USER\Software\Google\Chrome\PreferenceMACs" "C:\HKCU_Chrome.reg" /y *>$null
-      # Antigravity
       $BackupDir = "C:\cache_backups"
       $ProfilePathFile = "C:\profile_path.txt"
-      if (Test-Path $ProfilePathFile) {
-        $source = (Get-Content $ProfilePathFile -Raw).Trim()
-        if ($source -and (Test-Path $source)) {
-          $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
-          Compress-Archive -Path "$source\*" -DestinationPath "$BackupDir\profile_$timestamp.zip" -Force
+
+      for ($i = 1; $i -le $totalMinutes; $i++) {
+        Write-Host "Minute $i/$totalMinutes ($(Get-Date -Format 'HH:mm:ss'))"
+        
+        # BACKUP CHROME (mỗi phút)
+        if (Test-Path $chromeUserData) {
+          robocopy $chromeUserData $chromeCacheDir /E /NJH /NJS /NP | Out-Null
+          robocopy $chromeUserData $appveyorCacheDir /E /NJH /NJS /NP | Out-Null
+          reg export "HKEY_CURRENT_USER\Software\Google\Chrome\PreferenceMACs" "C:\HKCU_Chrome.reg" /y *>$null
         }
+
+        # BACKUP ANTIGRAVITY (mỗi phút)
+        if (Test-Path $ProfilePathFile) {
+          $source = (Get-Content $ProfilePathFile -Raw).Trim()
+          if ($source -and (Test-Path $source)) {
+            $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+            Compress-Archive -Path "$source\*" -DestinationPath "$BackupDir\profile_$timestamp.zip" -Force
+            Get-ChildItem $BackupDir -Filter "profile_*.zip" | Sort-Object LastWriteTime -Descending | Select-Object -Skip 5 | Remove-Item -Force
+          }
+        }
+        reg export HKCU "C:\RegistryBackup.reg" /y *>$null
+
+        Start-Sleep -Seconds 60
       }
-      reg export HKCU "C:\RegistryBackup.reg" /y *>$null
-      Write-Host "Final sweep done."
+      Write-Host "=== SESSION COMPLETED ==="
 
 build: off
 test: off
