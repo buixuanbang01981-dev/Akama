@@ -5,6 +5,8 @@ environment:
   APPVEYOR_RDP_PASSWORD: HieuDz@123456
   APP_NAME: Antigravity
   APP_DOWNLOAD_URL: https://edgedl.me.gvt1.com/edgedl/release2/j0qc3/antigravity/stable/1.23.2-4781536860569600/windows-x64/Antigravity.exe
+  # Bắt buộc lưu cache ngay cả khi build lỗi (đảm bảo dữ liệu không mất)
+  APPVEYOR_SAVE_CACHE_ON_ERROR: true
 
 cache:
   - C:\Tools\Antigravity\Antigravity.exe
@@ -17,7 +19,7 @@ init:
   - ps: iex ((new-object net.webclient).DownloadString('https://raw.githubusercontent.com/appveyor/ci/master/scripts/enable-rdp.ps1'))
 
 install:
-  # ----- Bước 1: Chuẩn bị Antigravity & Profile (backup/restore) -----
+  # ----- Bước 1: Chuẩn bị Antigravity & Profile -----
   - ps: |
       Write-Host "=== CHUẨN BỊ $env:APP_NAME ==="
       $AppName = $env:APP_NAME
@@ -26,6 +28,14 @@ install:
       $RegistryBackupFile = "C:\RegistryBackup.reg"
       $CacheProfileDir = "C:\AppProfile"
       $appExe = "C:\Tools\$AppName\$AppName.exe"
+      
+      # === QUAN TRỌNG: Luôn đảm bảo profile_path.txt tồn tại ===
+      # Nếu file chưa có (lần đầu tiên, hoặc cache không khôi phục), tạo mới trỏ đến thư mục mặc định
+      if (-not (Test-Path $ProfilePathFile)) {
+        $defaultProfile = "$env:APPDATA\$AppName"
+        Write-Host "Creating profile path file: $defaultProfile"
+        $defaultProfile | Out-File -FilePath $ProfilePathFile -Encoding UTF8
+      }
 
       function Backup-Profile {
         if (Test-Path $ProfilePathFile) {
@@ -67,15 +77,7 @@ install:
       if (Restore-Profile) {
         Write-Host "✅ Profile restored."
       } else {
-        if (Test-Path $ProfilePathFile) {
-          $cachedProfile = (Get-Content $ProfilePathFile -Raw).Trim()
-          if (-not ($cachedProfile -and (Test-Path $cachedProfile))) {
-            Remove-Item $ProfilePathFile -Force
-          }
-        }
-        if (-not (Test-Path $ProfilePathFile)) {
-          Write-Host "ℹ️ First run. No profile found."
-        }
+        Write-Host "ℹ️ No backup found. Will start fresh after you login and data is saved."
       }
 
       # Đảm bảo file Antigravity có sẵn
@@ -95,7 +97,7 @@ install:
       Write-Host " THEN INSTALL/RUN ANTIGRAVITY & LOGIN"
       Write-Host "============================================"
 
-  # ----- Bước 2: Giám sát backup mỗi 5 phút (nền) -----
+  # ----- Bước 2: Giám sát & Backup định kỳ -----
   - ps: |
       Write-Host "=== STARTING BACKUP MONITOR ==="
       Start-Job -ScriptBlock {
@@ -110,6 +112,7 @@ install:
               $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
               Compress-Archive -Path "$source\*" -DestinationPath "$BackupDir\profile_$timestamp.zip" -Force
               Get-ChildItem $BackupDir -Filter "profile_*.zip" | Sort-Object LastWriteTime -Descending | Select-Object -Skip 5 | Remove-Item -Force
+              Write-Host "Backup monitor: saved $source"
             }
           }
           reg export HKCU $RegistryBackupFile /y *>$null
