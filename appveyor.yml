@@ -2,18 +2,10 @@ version: 1.0.{build}
 image: Visual Studio 2019
 
 environment:
-  APPVEYOR_RDP_PASSWORD: HieuDz@123456  # Mật khẩu RDP của bạn
+  APPVEYOR_RDP_PASSWORD: HieuDz@123456
   APP_NAME: Antigravity
   APP_DOWNLOAD_URL: https://edgedl.me.gvt1.com/edgedl/release2/j0qc3/antigravity/stable/1.23.2-4781536860569600/windows-x64/Antigravity.exe
-  # Token (tùy chọn)
-  GH_TOKEN:
-    secure: <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>
-  TELEGRAM_BOT_TOKEN:
-    secure: <8446424800:AAGT3v7j1XIvUe6Q15DSA6F3Rl34iFOBM3E>
-  TELEGRAM_CHAT_ID:
-    secure: <7563947218>
 
-# Cache để lưu Antigravity và profile
 cache:
   - C:\Tools\Antigravity\Antigravity.exe
   - C:\profile_path.txt
@@ -22,11 +14,10 @@ cache:
   - C:\RegistryBackup.reg
 
 init:
-  # BẬT RDP – ĐÂY LÀ CỔNG TRUY CẬP DUY NHẤT
   - ps: iex ((new-object net.webclient).DownloadString('https://raw.githubusercontent.com/appveyor/ci/master/scripts/enable-rdp.ps1'))
 
 install:
-  # ----- Bước 1: Chuẩn bị Antigravity & Profile -----
+  # ----- Bước 1: Chuẩn bị Antigravity & Profile (backup/restore) -----
   - ps: |
       Write-Host "=== CHUẨN BỊ $env:APP_NAME ==="
       $AppName = $env:APP_NAME
@@ -98,14 +89,13 @@ install:
       }
 
       Write-Host "============================================"
-      Write-Host " CONNECT VIA RDP (use Microsoft Remote Desktop)"
-      Write-Host " Check log above for IP:Port (e.g., 67.225.164.41:33869)"
+      Write-Host " CONNECT VIA RDP (check log for IP:Port)"
       Write-Host " User: appveyor"
       Write-Host " Pass: $env:APPVEYOR_RDP_PASSWORD"
       Write-Host " THEN INSTALL/RUN ANTIGRAVITY & LOGIN"
       Write-Host "============================================"
 
-  # ----- Bước 2: Giám sát & Backup định kỳ -----
+  # ----- Bước 2: Giám sát backup mỗi 5 phút (nền) -----
   - ps: |
       Write-Host "=== STARTING BACKUP MONITOR ==="
       Start-Job -ScriptBlock {
@@ -130,25 +120,9 @@ install:
   # ----- Bước 3: Giữ session 55 phút -----
   - ps: |
       Write-Host "=== VPS SESSION STARTED (55 MINUTES) ==="
-      function Send-Telegram($msg) {
-        if ($env:TELEGRAM_BOT_TOKEN -and $env:TELEGRAM_CHAT_ID) {
-          try {
-            Invoke-RestMethod -Uri "https://api.telegram.org/bot$env:TELEGRAM_BOT_TOKEN/sendMessage?chat_id=$env:TELEGRAM_CHAT_ID&text=$([uri]::EscapeDataString($msg))" -Method Get -TimeoutSec 10 | Out-Null
-          } catch {}
-        }
-      }
-      Send-Telegram "VPS đã sẵn sàng qua RDP! Kiểm tra log AppVeyor để lấy IP:Port. User: appveyor"
-
       $totalMinutes = 55
       for ($i = 1; $i -le $totalMinutes; $i++) {
         Write-Host "Running minute $i/$totalMinutes ($(Get-Date -Format 'HH:mm:ss'))"
-        if ($i -eq 50 -and $env:GH_TOKEN) {
-          try {
-            $headers = @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = "application/vnd.github+json" }
-            $body = @{ event_type = "appveyor-restart" } | ConvertTo-Json
-            Invoke-RestMethod -Uri "https://api.github.com/repos/$env:APPVEYOR_REPO_NAME/dispatches" -Method Post -Headers $headers -Body $body
-          } catch {}
-        }
         Start-Sleep -Seconds 60
       }
       Write-Host "=== VPS SESSION COMPLETED ==="
