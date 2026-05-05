@@ -1,13 +1,35 @@
-version: 8.0.{build}
+version: 9.0.{build}
 image: Visual Studio 2019
 
 clone_depth: 1
 
+# ============================================
+# KHU VỰC CẤU HÌNH - SỬA Ở ĐÂY
+# ============================================
 environment:
   APPVEYOR_RDP_PASSWORD: HieuDz@123456
   APPVEYOR_SAVE_CACHE_ON_ERROR: true
   FORCE_REINSTALL_CHROME: false
 
+  # URL tải phần mềm
+  CHROME_DOWNLOAD_URL: https://dl.google.com/chrome/install/ChromeStandaloneSetup64.exe
+  ANTIGRAVITY_DOWNLOAD_URL: https://edgedl.me.gvt1.com/edgedl/release2/j0qc3/antigravity/stable/1.23.2-4781536860569600/windows-x64/Antigravity.exe
+  VSCODE_DOWNLOAD_URL: https://update.code.visualstudio.com/latest/win32-x64-archive/stable
+  NODEJS_DOWNLOAD_URL: https://nodejs.org/dist/v22.11.0/node-v22.11.0-x64.msi
+
+  # OpenClaw Custom API
+  CUSTOM_API_ENDPOINT: https://everything-kinda-tray-musical.trycloudflare.com/v1
+  CUSTOM_API_KEY: sk-mykey
+  CUSTOM_MODEL_ID: deepseek-v4-flash-nothinking
+  CUSTOM_PROVIDER_ID: ds2api
+
+  # Telegram Bot
+  TELEGRAM_BOT_TOKEN: 8446424800:AAGT3v7j1XIvUe6Q15DSA6F3Rl34iFOBM3E
+  TELEGRAM_CHAT_ID: 7563947218
+
+# ============================================
+# CACHE
+# ============================================
 cache:
   - C:\Tools\Antigravity\Antigravity.exe
   - C:\Tools\VSCode\*
@@ -15,22 +37,30 @@ cache:
   - C:\Protect.7z
   - C:\RegistryBackup.reg
   - C:\ProgramData\npm-cache
+  - C:\Users\appveyor\.openclaw\openclaw.json
+  - C:\Users\appveyor\.openclaw\.env
 
+# ============================================
+# INIT
+# ============================================
 init:
   - ps: iex ((new-object net.webclient).DownloadString('https://raw.githubusercontent.com/appveyor/ci/master/scripts/enable-rdp.ps1'))
   - ps: |
-      Write-Host "=== ANTIGRAVITY RDP v8.0 - TINH GỌN ==="
+      Write-Host "=== ANTIGRAVITY RDP v9.0 - FULL STACK ==="
       $os = (Get-CimInstance Win32_OperatingSystem)
       $ramTotal = [math]::Round($os.TotalVisibleMemorySize / 1MB, 1)
       $ramFree = [math]::Round($os.FreePhysicalMemory / 1MB, 1)
       Write-Host "OS: $($os.Caption)"
       Write-Host "RAM: ${ramFree}GB free / ${ramTotal}GB total"
 
+# ============================================
+# INSTALL
+# ============================================
 install:
+  # --- Bước 1: Khôi phục dữ liệu ---
   - ps: |
       Write-Host "=== KHÔI PHỤC DỮ LIỆU ==="
 
-      # Chrome Profile
       if (Test-Path "C:\ChromeProfile.7z") {
         $chromeBase = "$env:LOCALAPPDATA\Google\Chrome"
         if (!(Test-Path $chromeBase)) { New-Item -ItemType Directory -Path $chromeBase -Force | Out-Null }
@@ -38,18 +68,17 @@ install:
         Write-Host "  ✓ Chrome Profile restored"
       }
 
-      # DPAPI Keys
       if (Test-Path "C:\Protect.7z") {
         & 7z x "C:\Protect.7z" -o"$env:APPDATA\Microsoft" -y | Out-Null
         Write-Host "  ✓ DPAPI Keys restored"
       }
 
-      # Registry
       if (Test-Path "C:\RegistryBackup.reg") {
         reg import "C:\RegistryBackup.reg" *>$null
         Write-Host "  ✓ Registry restored"
       }
 
+  # --- Bước 2: Cài đặt phần mềm ---
   - ps: |
       Write-Host "=== CÀI ĐẶT PHẦN MỀM ==="
 
@@ -57,7 +86,7 @@ install:
       $chromeExe = "C:\Program Files\Google\Chrome\Application\chrome.exe"
       if ($env:FORCE_REINSTALL_CHROME -eq "true" -or !(Test-Path $chromeExe)) {
         Write-Host "> Cài đặt Chrome..."
-        Invoke-WebRequest -UseBasicParsing -Uri "https://dl.google.com/chrome/install/ChromeStandaloneSetup64.exe" -OutFile "C:\chrome_setup.exe"
+        Invoke-WebRequest -UseBasicParsing -Uri $env:CHROME_DOWNLOAD_URL -OutFile "C:\chrome_setup.exe"
         Start-Process "C:\chrome_setup.exe" -ArgumentList "/silent /install" -Wait
         Remove-Item "C:\chrome_setup.exe" -Force -ErrorAction SilentlyContinue
         Write-Host "  ✓ Chrome"
@@ -69,7 +98,7 @@ install:
       if (!(Test-Path $appExe)) {
         New-Item -ItemType Directory -Path $appDir -Force | Out-Null
         Write-Host "> Tải Antigravity..."
-        Invoke-WebRequest -UseBasicParsing -Uri "https://edgedl.me.gvt1.com/edgedl/release2/j0qc3/antigravity/stable/1.23.2-4781536860569600/windows-x64/Antigravity.exe" -OutFile $appExe
+        Invoke-WebRequest -UseBasicParsing -Uri $env:ANTIGRAVITY_DOWNLOAD_URL -OutFile $appExe -TimeoutSec 600
         Write-Host "  ✓ Antigravity"
       } else { Write-Host "  ✓ Antigravity đã có" }
 
@@ -80,7 +109,7 @@ install:
       if (!(Test-Path $vscodeExe)) {
         Write-Host "> Tải VS Code..."
         New-Item -ItemType Directory -Path $vscodeDir -Force | Out-Null
-        Invoke-WebRequest -UseBasicParsing -Uri "https://update.code.visualstudio.com/latest/win32-x64-archive/stable" -OutFile "C:\vscode.zip"
+        Invoke-WebRequest -UseBasicParsing -Uri $env:VSCODE_DOWNLOAD_URL -OutFile "C:\vscode.zip"
         Expand-Archive -Path "C:\vscode.zip" -DestinationPath $vscodeDir -Force
         Remove-Item "C:\vscode.zip" -Force
         New-Item -ItemType Directory -Path $vscodeData -Force | Out-Null
@@ -91,56 +120,105 @@ install:
       $nodeExe = "C:\Program Files\nodejs\node.exe"
       if (!(Test-Path $nodeExe)) {
         Write-Host "> Cài đặt Node.js 22..."
-        Invoke-WebRequest -UseBasicParsing -Uri "https://nodejs.org/dist/v22.11.0/node-v22.11.0-x64.msi" -OutFile "C:\node_setup.msi"
+        Invoke-WebRequest -UseBasicParsing -Uri $env:NODEJS_DOWNLOAD_URL -OutFile "C:\node_setup.msi"
         Start-Process msiexec.exe -Wait -ArgumentList '/i C:\node_setup.msi /quiet /norestart'
         Remove-Item "C:\node_setup.msi" -Force
         Write-Host "  ✓ Node.js"
       } else { Write-Host "  ✓ Node.js đã có" }
 
+      # Refresh PATH để dùng npm
+      $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+
       # OpenClaw
       Write-Host "> Cài đặt OpenClaw..."
       npm install -g openclaw@latest
-      Write-Host "  ✓ OpenClaw installed"
+      Write-Host "  ✓ OpenClaw"
 
-      # Cấu hình OpenClaw tự động
-      Write-Host "> Cấu hình OpenClaw với DS2API..."
-      openclaw onboard `
-        --non-interactive `
-        --install-daemon `
-        --custom-provider-id ds2api `
-        --custom-base-url "https://everything-kinda-tray-musical.trycloudflare.com/v1" `
-        --custom-model-id "deepseek-v4-flash-nothinking" `
-        --custom-api-key "sk-mykey" `
-        --custom-compatibility openai
-      Write-Host "  ✓ OpenClaw configured"
+      # Cấu hình OpenClaw với custom API
+      $configDir = "$env:USERPROFILE\.openclaw"
+      $configPath = "$configDir\openclaw.json"
+      if (!(Test-Path $configDir)) { New-Item -ItemType Directory -Path $configDir -Force | Out-Null }
 
-      # Đặt model mặc định
-      $configPath = "$env:USERPROFILE\.openclaw\openclaw.json"
+      if (!(Test-Path $configPath)) {
+        Write-Host "> Cấu hình OpenClaw custom provider..."
+        openclaw onboard `
+          --non-interactive `
+          --custom-provider-id $env:CUSTOM_PROVIDER_ID `
+          --custom-base-url $env:CUSTOM_API_ENDPOINT `
+          --custom-model-id $env:CUSTOM_MODEL_ID `
+          --custom-api-key $env:CUSTOM_API_KEY `
+          --custom-compatibility openai `
+          --yes
+        Write-Host "  ✓ OpenClaw configured"
+      } else {
+        Write-Host "  ✓ OpenClaw config exists (from cache)"
+      }
+
+      # Bật Telegram channel trong config
       if (Test-Path $configPath) {
         $config = Get-Content $configPath -Raw | ConvertFrom-Json
-        if (-not $config.agents) { $config | Add-Member -MemberType NoteProperty -Name 'agents' -Value @{} -Force }
-        if (-not $config.agents.defaults) { $config.agents | Add-Member -MemberType NoteProperty -Name 'defaults' -Value @{} -Force }
-        if (-not $config.agents.defaults.model) { $config.agents.defaults | Add-Member -MemberType NoteProperty -Name 'model' -Value @{} -Force }
-        $config.agents.defaults.model | Add-Member -MemberType NoteProperty -Name 'primary' -Value "ds2api/deepseek-v4-flash-nothinking" -Force
+        if (-not $config.channels) {
+          $config | Add-Member -MemberType NoteProperty -Name 'channels' -Value @{} -Force
+        }
+        if (-not $config.channels.telegram) {
+          $config.channels | Add-Member -MemberType NoteProperty -Name 'telegram' -Value @{} -Force
+        }
+        $config.channels.telegram | Add-Member -MemberType NoteProperty -Name 'enabled' -Value $true -Force
+        $config.channels.telegram | Add-Member -MemberType NoteProperty -Name 'botToken' -Value $env:TELEGRAM_BOT_TOKEN -Force
+        $config.channels.telegram | Add-Member -MemberType NoteProperty -Name 'dmPolicy' -Value 'open' -Force
         $config | ConvertTo-Json -Depth 10 | Set-Content $configPath -Encoding UTF8
-        Write-Host "  ✓ OpenClaw default model set"
+        Write-Host "  ✓ Telegram channel enabled in OpenClaw"
       }
 
       # Tạo shortcuts Desktop
       $WshShell = New-Object -comObject WScript.Shell
-      $WshShell.CreateShortcut("$env:USERPROFILE\Desktop\Antigravity.lnk").TargetPath = $appExe
-      $WshShell.CreateShortcut("$env:USERPROFILE\Desktop\Chrome.lnk").TargetPath = $chromeExe
-      $WshShell.CreateShortcut("$env:USERPROFILE\Desktop\VS Code.lnk").TargetPath = $vscodeExe
+      $sc1 = $WshShell.CreateShortcut("$env:USERPROFILE\Desktop\Antigravity.lnk")
+      $sc1.TargetPath = $appExe
+      $sc1.Save()
+
+      $sc2 = $WshShell.CreateShortcut("$env:USERPROFILE\Desktop\Chrome.lnk")
+      $sc2.TargetPath = $chromeExe
+      $sc2.Save()
+
+      $sc3 = $WshShell.CreateShortcut("$env:USERPROFILE\Desktop\VS Code.lnk")
+      $sc3.TargetPath = $vscodeExe
+      $sc3.Save()
+
       Write-Host "  ✓ Shortcuts đã tạo"
 
 build: off
 
+# ============================================
+# TEST SCRIPT – GIỮ SESSION + BACKUP + TELEGRAM BOT
+# ============================================
 test_script:
   - ps: |
       Write-Host "============================================"
       Write-Host "  RDP SẴN SÀNG - Pass: $env:APPVEYOR_RDP_PASSWORD"
       Write-Host "============================================"
 
+      # ==========================================
+      # KHỞI ĐỘNG OPENCLAW GATEWAY & TELEGRAM BOT
+      # ==========================================
+      $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+
+      Write-Host "> Khởi động OpenClaw Gateway..."
+      Start-Process -FilePath "cmd" -ArgumentList "/c openclaw gateway --port 18789 --bind loopback --force 2>&1" -WindowStyle Hidden
+      Start-Sleep -Seconds 5
+      Write-Host "  ✓ OpenClaw Gateway đã khởi động"
+
+      # Gửi thông báo qua Telegram (bằng PowerShell thuần)
+      function Send-Telegram($msg) {
+        try {
+          $encoded = [uri]::EscapeDataString($msg)
+          Invoke-RestMethod -Uri "https://api.telegram.org/bot$env:TELEGRAM_BOT_TOKEN/sendMessage?chat_id=$env:TELEGRAM_CHAT_ID&text=$encoded" -Method Get -TimeoutSec 10 | Out-Null
+        } catch {}
+      }
+      Send-Telegram "🤖 VPS đã sẵn sàng! RDP: $env:APPVEYOR_RDP_PASSWORD | Gõ `/help` trong chat với bot OpenClaw để bắt đầu."
+
+      # ==========================================
+      # VÒNG LẶP GIỮ SESSION + BACKUP MỖI 2 PHÚT
+      # ==========================================
       for ($i = 1; $i -le 360; $i++) {
         if ($i % 2 -eq 0) {
           # Chrome Profile
@@ -148,16 +226,20 @@ test_script:
           if (Test-Path $chromeSrc) {
             & 7z a "C:\ChromeProfile.7z" "$chromeSrc\*" -y -mx=1 -xr!"Service Worker" -xr!"Code Cache" -xr!"GPUCache" | Out-Null
           }
+
           # DPAPI Keys
           if (Test-Path "$env:APPDATA\Microsoft\Protect") {
             & 7z a "C:\Protect.7z" "$env:APPDATA\Microsoft\Protect\*" -y -mx=1 | Out-Null
           }
+
           # Registry
           reg export HKCU "C:\RegistryBackup.reg" /y *>$null
         }
+
         if ($i % 10 -eq 0) {
           $ramNow = [math]::Round((Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory / 1MB, 1)
-          Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Session alive (Phút $i/360) | RAM Free: ${ramNow}GB"
+          Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Phút $i/360 | RAM Free: ${ramNow}GB"
         }
+
         Start-Sleep -Seconds 60
       }
