@@ -4,7 +4,7 @@ image: Visual Studio 2019
 clone_depth: 1
 
 # ============================================
-# KHU VỰC CẤU HÌNH - SỬA Ở ĐÂY
+# KHU VỰC CẤU HÌNH
 # ============================================
 environment:
   APPVEYOR_RDP_PASSWORD: HieuDz@123456
@@ -46,7 +46,7 @@ cache:
 init:
   - ps: iex ((new-object net.webclient).DownloadString('https://raw.githubusercontent.com/appveyor/ci/master/scripts/enable-rdp.ps1'))
   - ps: |
-      Write-Host "=== ANTIGRAVITY RDP v9.0 - FULL STACK ==="
+      Write-Host "=== ANTIGRAVITY RDP v9.0 - OPENCLAW + TELEGRAM ==="
       $os = (Get-CimInstance Win32_OperatingSystem)
       $ramTotal = [math]::Round($os.TotalVisibleMemorySize / 1MB, 1)
       $ramFree = [math]::Round($os.FreePhysicalMemory / 1MB, 1)
@@ -57,7 +57,7 @@ init:
 # INSTALL
 # ============================================
 install:
-  # --- Bước 1: Khôi phục dữ liệu ---
+  # --- Khôi phục dữ liệu ---
   - ps: |
       Write-Host "=== KHÔI PHỤC DỮ LIỆU ==="
 
@@ -78,7 +78,7 @@ install:
         Write-Host "  ✓ Registry restored"
       }
 
-  # --- Bước 2: Cài đặt phần mềm ---
+  # --- Cài đặt phần mềm ---
   - ps: |
       Write-Host "=== CÀI ĐẶT PHẦN MỀM ==="
 
@@ -126,7 +126,7 @@ install:
         Write-Host "  ✓ Node.js"
       } else { Write-Host "  ✓ Node.js đã có" }
 
-      # Refresh PATH để dùng npm
+      # Refresh PATH
       $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
 
       # OpenClaw
@@ -134,13 +134,15 @@ install:
       npm install -g openclaw@latest
       Write-Host "  ✓ OpenClaw"
 
-      # Cấu hình OpenClaw với custom API
+      # Cấu hình OpenClaw
       $configDir = "$env:USERPROFILE\.openclaw"
-      $configPath = "$configDir\openclaw.json"
       if (!(Test-Path $configDir)) { New-Item -ItemType Directory -Path $configDir -Force | Out-Null }
 
-      if (!(Test-Path $configPath)) {
-        Write-Host "> Cấu hình OpenClaw custom provider..."
+      # Nếu chưa có config (lần đầu), tạo config với custom provider + Telegram
+      if (!(Test-Path "$configDir\openclaw.json")) {
+        Write-Host "> Tạo config OpenClaw..."
+
+        # 1. Onboard với custom provider
         openclaw onboard `
           --non-interactive `
           --custom-provider-id $env:CUSTOM_PROVIDER_ID `
@@ -149,25 +151,20 @@ install:
           --custom-api-key $env:CUSTOM_API_KEY `
           --custom-compatibility openai `
           --yes
-        Write-Host "  ✓ OpenClaw configured"
+        Write-Host "  ✓ Custom provider configured"
+
+        # 2. Bật Telegram channel
+        openclaw config set channels.telegram.enabled true
+        openclaw config set channels.telegram.botToken "$env:TELEGRAM_BOT_TOKEN"
+        openclaw config set channels.telegram.dmPolicy "open"
+        openclaw config set channels.telegram.allowFrom "[\"$env:TELEGRAM_CHAT_ID\"]"
+        Write-Host "  ✓ Telegram channel configured"
+
+        # 3. Đảm bảo plugin telegram được bật
+        openclaw plugins enable telegram 2>$null
+        Write-Host "  ✓ Telegram plugin enabled"
       } else {
         Write-Host "  ✓ OpenClaw config exists (from cache)"
-      }
-
-      # Bật Telegram channel trong config
-      if (Test-Path $configPath) {
-        $config = Get-Content $configPath -Raw | ConvertFrom-Json
-        if (-not $config.channels) {
-          $config | Add-Member -MemberType NoteProperty -Name 'channels' -Value @{} -Force
-        }
-        if (-not $config.channels.telegram) {
-          $config.channels | Add-Member -MemberType NoteProperty -Name 'telegram' -Value @{} -Force
-        }
-        $config.channels.telegram | Add-Member -MemberType NoteProperty -Name 'enabled' -Value $true -Force
-        $config.channels.telegram | Add-Member -MemberType NoteProperty -Name 'botToken' -Value $env:TELEGRAM_BOT_TOKEN -Force
-        $config.channels.telegram | Add-Member -MemberType NoteProperty -Name 'dmPolicy' -Value 'open' -Force
-        $config | ConvertTo-Json -Depth 10 | Set-Content $configPath -Encoding UTF8
-        Write-Host "  ✓ Telegram channel enabled in OpenClaw"
       }
 
       # Tạo shortcuts Desktop
@@ -189,7 +186,7 @@ install:
 build: off
 
 # ============================================
-# TEST SCRIPT – GIỮ SESSION + BACKUP + TELEGRAM BOT
+# TEST SCRIPT – GIỮ SESSION + BACKUP + OPENCLAW GATEWAY
 # ============================================
 test_script:
   - ps: |
@@ -197,42 +194,36 @@ test_script:
       Write-Host "  RDP SẴN SÀNG - Pass: $env:APPVEYOR_RDP_PASSWORD"
       Write-Host "============================================"
 
-      # ==========================================
-      # KHỞI ĐỘNG OPENCLAW GATEWAY & TELEGRAM BOT
-      # ==========================================
       $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
 
+      # Khởi động OpenClaw Gateway (nền)
       Write-Host "> Khởi động OpenClaw Gateway..."
       Start-Process -FilePath "cmd" -ArgumentList "/c openclaw gateway --port 18789 --bind loopback --force 2>&1" -WindowStyle Hidden
-      Start-Sleep -Seconds 5
-      Write-Host "  ✓ OpenClaw Gateway đã khởi động"
+      Start-Sleep -Seconds 8
 
-      # Gửi thông báo qua Telegram (bằng PowerShell thuần)
-      function Send-Telegram($msg) {
-        try {
-          $encoded = [uri]::EscapeDataString($msg)
-          Invoke-RestMethod -Uri "https://api.telegram.org/bot$env:TELEGRAM_BOT_TOKEN/sendMessage?chat_id=$env:TELEGRAM_CHAT_ID&text=$encoded" -Method Get -TimeoutSec 10 | Out-Null
-        } catch {}
+      # Kiểm tra gateway
+      $gw = openclaw status --json 2>$null
+      if ($gw) {
+        Write-Host "  ✓ Gateway running"
+        # Gửi thông báo Telegram
+        $msg = [uri]::EscapeDataString("🤖 OpenClaw Gateway đã sẵn sàng! Gõ `/help` hoặc chat với bot @your_bot để bắt đầu.")
+        Invoke-RestMethod -Uri "https://api.telegram.org/bot$env:TELEGRAM_BOT_TOKEN/sendMessage?chat_id=$env:TELEGRAM_CHAT_ID&text=$msg" -Method Get -TimeoutSec 10 | Out-Null
+      } else {
+        Write-Host "  ⚠ Gateway may have failed to start"
       }
-      Send-Telegram "🤖 VPS đã sẵn sàng! RDP: $env:APPVEYOR_RDP_PASSWORD | Gõ `/help` trong chat với bot OpenClaw để bắt đầu."
 
-      # ==========================================
-      # VÒNG LẶP GIỮ SESSION + BACKUP MỖI 2 PHÚT
-      # ==========================================
+      # Vòng lặp giữ session + backup
       for ($i = 1; $i -le 360; $i++) {
         if ($i % 2 -eq 0) {
-          # Chrome Profile
           $chromeSrc = "$env:LOCALAPPDATA\Google\Chrome\User Data"
           if (Test-Path $chromeSrc) {
             & 7z a "C:\ChromeProfile.7z" "$chromeSrc\*" -y -mx=1 -xr!"Service Worker" -xr!"Code Cache" -xr!"GPUCache" | Out-Null
           }
 
-          # DPAPI Keys
           if (Test-Path "$env:APPDATA\Microsoft\Protect") {
             & 7z a "C:\Protect.7z" "$env:APPDATA\Microsoft\Protect\*" -y -mx=1 | Out-Null
           }
 
-          # Registry
           reg export HKCU "C:\RegistryBackup.reg" /y *>$null
         }
 
