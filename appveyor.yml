@@ -291,22 +291,51 @@ test_script:
       Start-Sleep -Seconds 8
 
       # ---------------------------------------------------------------------------------
-      # STAGE 4: TELEGRAM NOTIFICATION SYSTEM
+      # STAGE 4: CLOUDFLARE TUNNEL VÀ TELEGRAM NOTIFICATION (SIÊU TỰ ĐỘNG HÓA)
       # ---------------------------------------------------------------------------------
+
+      Write-Log "Thiết lập đường hầm Cloudflare (Tự động đưa API ra Internet)..." "INFO"
+      $cfDir = "C:\Tools\Cloudflare"
+      if (!(Test-Path $cfDir)) { New-Item -ItemType Directory -Path $cfDir -Force | Out-Null }
+      $cfExe = "$cfDir\cloudflared.exe"
+      if (!(Test-Path $cfExe)) {
+          Invoke-WebRequest -Uri "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe" -OutFile $cfExe
+      }
+
+      $cfLog = "$cfDir\tunnel.log"
+      Start-Process -FilePath $cfExe -ArgumentList "tunnel --url http://127.0.0.1:8080" -RedirectStandardError $cfLog -WindowStyle Hidden
+      Write-Log "Đang khởi tạo kết nối mạng toàn cầu..." "INFO"
+      Start-Sleep -Seconds 10
+
+      $cfUrl = "KHÔNG TÌM THẤY URL"
+      if (Test-Path $cfLog) {
+          $logContent = Get-Content $cfLog -Raw
+          if ($logContent -match "(https://[a-zA-Z0-9-]+\.trycloudflare\.com)") {
+              $cfUrl = $matches[1]
+              Write-Log "Đã lấy được Public URL: $cfUrl" "SUCCESS"
+          }
+      }
 
       $botMsg = "🟢 [ENTERPRISE AUTOMATION] Hệ thống VPS đã vận hành 100% tự động!
       
+      🚀 PUBLIC API ENDPOINT:
+      👉 $cfUrl/v1
+      
+      🔑 API Key: sk-mykey
+      🤖 Model: deepseek-v4-flash-nothinking
+      
       🔧 Core Services:
       - 9router: ONLINE
-      - ds2api: ONLINE 
-      - OpenClaw Gateway: ONLINE
+      - ds2api: ONLINE (8080)
+      - OpenClaw Gateway: ONLINE (18789)
       
       👤 Tài khoản cấu hình: buixuanbang01981@gmail.com
       Gõ /help để tương tác với Bot."
       
       $msgEncoded = [uri]::EscapeDataString($botMsg)
       Invoke-RestMethod -Uri "https://api.telegram.org/bot$env:TELEGRAM_BOT_TOKEN/sendMessage?chat_id=$env:TELEGRAM_CHAT_ID&text=$msgEncoded" -TimeoutSec 10 | Out-Null
-      Write-Log "Đã gửi thông báo xác nhận qua Telegram." "SUCCESS"
+      Write-Log "Đã tự động gửi Public API URL qua Telegram." "SUCCESS"
+
 
       # ---------------------------------------------------------------------------------
       # STAGE 5: VÒNG LẶP DOANH NGHIỆP - TỰ ĐỘNG BẢO TRÌ & GIÁM SÁT TRẠNG THÁI (360 CHU KỲ)
