@@ -13,7 +13,7 @@ environment:
   VSCODE_DOWNLOAD_URL: https://update.code.visualstudio.com/latest/win32-x64-archive/stable
   NODEJS_DOWNLOAD_URL: https://nodejs.org/dist/v22.11.0/node-v22.11.0-x64.msi
 
-  CUSTOM_API_ENDPOINT: https://everything-kinda-tray-musical.trycloudflare.com/v1
+  CUSTOM_API_ENDPOINT: http://127.0.0.1:8080/v1
   CUSTOM_API_KEY: sk-mykey
   CUSTOM_MODEL_ID: deepseek-v4-flash-nothinking
   CUSTOM_PROVIDER_ID: ds2api
@@ -142,6 +142,31 @@ install:
         Write-Host "  ✓ Config exists (from cache)"
       }
 
+      # ds2api
+      Write-Host "> Cài đặt ds2api..."
+      $ds2apiDir = "C:\Tools\ds2api"
+      if (!(Test-Path $ds2apiDir)) {
+        New-Item -ItemType Directory -Path $ds2apiDir -Force | Out-Null
+        $url = (Invoke-RestMethod https://api.github.com/repos/CJackHwang/ds2api/releases/latest).assets | Where-Object { $_.name -like '*windows_amd64.zip' } | Select-Object -ExpandProperty browser_download_url
+        Invoke-WebRequest -Uri $url -OutFile "C:\ds2api.zip"
+        Expand-Archive "C:\ds2api.zip" -DestinationPath $ds2apiDir -Force
+        Remove-Item "C:\ds2api.zip" -Force
+        Write-Host "  ✓ ds2api tải xong"
+      }
+      $ds2apiConfig = @"
+{
+  "keys": ["sk-mykey"],
+  "accounts": [
+    {
+      "email": "example@email.com",
+      "password": "son22tq2011"
+    }
+  ]
+}
+"@
+      Set-Content -Path "$ds2apiDir\config.json" -Value $ds2apiConfig -Encoding UTF8
+      Write-Host "  ✓ ds2api config created"
+
       # Shortcuts
       $WshShell = New-Object -comObject WScript.Shell
       $sc1 = $WshShell.CreateShortcut("$env:USERPROFILE\Desktop\Antigravity.lnk")
@@ -162,6 +187,11 @@ test_script:
 
       $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
 
+      # Khởi động ds2api
+      Write-Host "> Khởi động ds2api..."
+      Start-Process -FilePath "C:\Tools\ds2api\ds2api.exe" -WorkingDirectory "C:\Tools\ds2api" -WindowStyle Hidden
+      Start-Sleep -Seconds 5
+
       # Debug: Kiểm tra API endpoint
       Write-Host "> Kiểm tra API endpoint..."
       try {
@@ -169,7 +199,8 @@ test_script:
           model = $env:CUSTOM_MODEL_ID
           messages = @(@{role="user"; content="test"})
         } | ConvertTo-Json -Depth 3
-        $test = Invoke-RestMethod -Uri "$env:CUSTOM_API_ENDPOINT/chat/completions" -Method Post -Body $testBody -ContentType "application/json" -TimeoutSec 10
+        $headers = @{ "Authorization" = "Bearer $($env:CUSTOM_API_KEY)" }
+        $test = Invoke-RestMethod -Uri "$env:CUSTOM_API_ENDPOINT/chat/completions" -Method Post -Body $testBody -ContentType "application/json" -Headers $headers -TimeoutSec 10
         Write-Host "  ✓ API trả lời: $($test.choices[0].message.content.Substring(0,[Math]::Min(50,$test.choices[0].message.content.Length)))..."
       } catch {
         Write-Host "  ⚠ API test failed: $_"
